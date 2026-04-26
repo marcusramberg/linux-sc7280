@@ -644,6 +644,17 @@ config MCHP_LAN966X_PCI
 	    - lan966x-miim (MDIO_MSCC_MIIM)
 	    - lan966x-switch (LAN966X_SWITCH)
 
+config MISC_FOCALTECH_FP
+	tristate "FocalTech FT9362 fingerprint sensor driver"
+	depends on OF
+	help
+	  Driver for the FocalTech FT9362 capacitive fingerprint sensor.
+	  Manages GPIO power/reset/IRQ sequencing and exposes /dev/focaltech_fp
+	  for userspace TA communication. The sensor is used on Fairphone 5
+	  (QCM6490) with the focal32 QTEE Trusted Application.
+
+	  Say M or Y if you have a device with this sensor.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
