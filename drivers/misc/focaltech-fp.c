@@ -12,16 +12,14 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_wakeup.h>
-#include <linux/poll.h>
-#include <linux/uaccess.h>
+#include <linux/compat.h>
 
 #define FF_IOC_ENABLE_IRQ   _IO('f', 0x05)
 #define FF_IOC_DISABLE_IRQ  _IO('f', 0x06)
-#define FF_IOC_RESET_DEVICE _IOW('f', 0x02, u32)
+#define FF_IOC_RESET_DEVICE _IO('f', 0x02)
 
 struct focalfp_dev {
 	struct miscdevice miscdev;
-	struct device *dev;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *st_rst_low;
 	struct pinctrl_state *st_rst_high;
@@ -123,6 +121,7 @@ static int focalfp_release(struct inode *inode, struct file *file)
 static const struct file_operations focalfp_fops = {
 	.owner          = THIS_MODULE,
 	.unlocked_ioctl = focalfp_ioctl,
+	.compat_ioctl   = compat_ptr_ioctl,
 	.release        = focalfp_release,
 };
 
@@ -135,7 +134,6 @@ static int focalfp_probe(struct platform_device *pdev)
 	if (!fp)
 		return -ENOMEM;
 
-	fp->dev = &pdev->dev;
 	init_waitqueue_head(&fp->irq_wq);
 	spin_lock_init(&fp->irq_lock);
 	atomic_set(&fp->irq_fired, 0);
@@ -178,20 +176,20 @@ static int focalfp_probe(struct platform_device *pdev)
 	ret = focalfp_do_reset(fp);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret, "reset failed\n");
-		goto err_ws;
+		goto err_pwr;
 	}
 
 	/* Configure IRQ pin */
 	ret = pinctrl_select_state(fp->pinctrl, fp->st_irq);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret, "IRQ pinctrl failed\n");
-		goto err_ws;
+		goto err_pwr;
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		ret = irq;
-		goto err_ws;
+		goto err_pwr;
 	}
 	fp->irq = irq;
 
@@ -200,7 +198,7 @@ static int focalfp_probe(struct platform_device *pdev)
 	                        "focaltech_fp", fp);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret, "IRQ request failed\n");
-		goto err_ws;
+		goto err_pwr;
 	}
 
 	fp->irq_enabled = false;
@@ -213,13 +211,15 @@ static int focalfp_probe(struct platform_device *pdev)
 	ret = misc_register(&fp->miscdev);
 	if (ret) {
 		dev_err_probe(&pdev->dev, ret, "misc_register failed\n");
-		goto err_ws;
+		goto err_pwr;
 	}
 
 	platform_set_drvdata(pdev, fp);
 	dev_info(&pdev->dev, "FocalTech FT9362 fingerprint driver loaded\n");
 	return 0;
 
+err_pwr:
+	pinctrl_select_state(fp->pinctrl, fp->st_pwr_low);
 err_ws:
 	wakeup_source_unregister(fp->ws);
 	return ret;
@@ -228,10 +228,13 @@ err_ws:
 static void focalfp_remove(struct platform_device *pdev)
 {
 	struct focalfp_dev *fp = platform_get_drvdata(pdev);
+	int ret;
 
 	misc_deregister(&fp->miscdev);
 	wakeup_source_unregister(fp->ws);
-	pinctrl_select_state(fp->pinctrl, fp->st_pwr_low);
+	ret = pinctrl_select_state(fp->pinctrl, fp->st_pwr_low);
+	if (ret)
+		dev_warn(&pdev->dev, "VDD power-down failed: %d\n", ret);
 }
 
 static const struct of_device_id focalfp_of_match[] = {
@@ -250,5 +253,6 @@ static struct platform_driver focalfp_driver = {
 };
 module_platform_driver(focalfp_driver);
 
+MODULE_AUTHOR("Marcus Ramberg <marcus.ramberg@gmail.com>");
 MODULE_DESCRIPTION("FocalTech FT9362 fingerprint sensor GPIO/IRQ driver");
 MODULE_LICENSE("GPL");
