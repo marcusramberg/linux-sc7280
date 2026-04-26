@@ -13,6 +13,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_wakeup.h>
 #include <linux/compat.h>
+#include <linux/irq.h>
 
 #define FF_IOC_ENABLE_IRQ   _IO('f', 0x05)
 #define FF_IOC_DISABLE_IRQ  _IO('f', 0x06)
@@ -201,6 +202,8 @@ static int focalfp_probe(struct platform_device *pdev)
 		goto err_pwr;
 	}
 
+	/* Clear any edge the GIC latched during sensor power-on/reset */
+	irq_set_irqchip_state(fp->irq, IRQCHIP_STATE_PENDING, false);
 	fp->irq_enabled = false;
 
 	fp->miscdev.minor  = MISC_DYNAMIC_MINOR;
