@@ -228,6 +228,7 @@ static int mt76_led_init(struct mt76_phy *phy)
 		 wiphy_name(hw->wiphy));
 
 	phy->leds.cdev.name = phy->leds.name;
+
 	/* The throughput trigger is created once per ieee80211_hw. Under
 	 * single-wiphy MLO every band registers its own LED classdev for the
 	 * same hw and the bands can come up in any order, so create the trigger
