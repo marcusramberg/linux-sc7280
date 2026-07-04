@@ -764,7 +764,7 @@ mt7996_mac_write_txwi_80211(struct mt7996_dev *dev, __le32 *txwi,
 	u32 val;
 
 	if (ieee80211_is_action(fc) &&
-	    skb->len >= IEEE80211_MIN_ACTION_SIZE(action_code) &&
+	    skb->len >= IEEE80211_MIN_ACTION_SIZE(addba_req) &&
 	    mgmt->u.action.category == WLAN_CATEGORY_BACK &&
 	    mgmt->u.action.action_code == WLAN_ACTION_ADDBA_REQ) {
 		if (is_mt7990(&dev->mt76))
@@ -1020,7 +1020,7 @@ int mt7996_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 	if (!wcid)
 		wcid = &dev->mt76.global_wcid;
 
-	if ((is_8023 || ieee80211_is_data_qos(hdr->frame_control)) && sta->mlo &&
+	if ((is_8023 || ieee80211_is_data_qos(hdr->frame_control)) && sta && sta->mlo &&
 	    likely(tx_info->skb->protocol != cpu_to_be16(ETH_P_PAE))) {
 		u8 tid = tx_info->skb->priority & IEEE80211_QOS_CTL_TID_MASK;
 
@@ -1029,6 +1029,11 @@ int mt7996_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 		link_id = u32_get_bits(info->control.flags,
 				       IEEE80211_TX_CTRL_MLO_LINK);
 	}
+
+	/* non-MLD frames are LINK_UNSPECIFIED; use the wcid's own link */
+	if (link_id == IEEE80211_LINK_UNSPECIFIED &&
+	    wcid != &dev->mt76.global_wcid)
+		link_id = wcid->link_id;
 
 	if (link_id != wcid->link_id && link_id != IEEE80211_LINK_UNSPECIFIED) {
 		if (msta) {
