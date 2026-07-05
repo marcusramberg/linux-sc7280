@@ -4766,17 +4766,24 @@ out_free:
 static bool ieee80211_check_mcast_offload(struct ieee80211_sub_if_data *sdata,
 					  struct sk_buff *skb)
 {
+	struct ieee80211_sub_if_data *bss = sdata;
 	struct ethhdr *ehdr = (struct ethhdr *)skb->data;
 
-	if ((ieee80211_vif_is_mld(&sdata->vif) &&
-	     (sdata->vif.type == NL80211_IFTYPE_AP &&
-	      !ieee80211_hw_check(&sdata->local->hw, MLO_MCAST_MULTI_LINK_TX))) ||
-	    (sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
-	     !sdata->wdev.use_4addr))
+	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
+		if (!sdata->bss || !sdata->wdev.use_4addr)
+			return false;
+
+		bss = container_of(sdata->bss, struct ieee80211_sub_if_data,
+				   u.ap);
+	}
+
+	if (ieee80211_vif_is_mld(&bss->vif) &&
+	    bss->vif.type == NL80211_IFTYPE_AP &&
+	    !ieee80211_hw_check(&bss->local->hw, MLO_MCAST_MULTI_LINK_TX))
 		return false;
 
 	if (!is_multicast_ether_addr(skb->data) ||
-	    !(sdata->vif.offload_flags & IEEE80211_OFFLOAD_ENCAP_MCAST) ||
+	    !(bss->vif.offload_flags & IEEE80211_OFFLOAD_ENCAP_MCAST) ||
 	    sdata->control_port_protocol == ehdr->h_proto)
 		return false;
 
@@ -4815,8 +4822,8 @@ static void __ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
 		link = &sdata->deflink;
 		key = rcu_dereference(link->default_multicast_key);
 	} else if (unlikely(IS_ERR_OR_NULL(sta) || !sta->uploaded ||
-		   !test_sta_flag(sta, WLAN_STA_AUTHORIZED) ||
-	    sdata->control_port_protocol == ehdr->h_proto)) {
+			     !test_sta_flag(sta, WLAN_STA_AUTHORIZED) ||
+			     sdata->control_port_protocol == ehdr->h_proto)) {
 		goto skip_offload;
 	} else {
 		key = rcu_dereference(sta->ptk[sta->ptk_idx]);
