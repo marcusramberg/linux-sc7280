@@ -151,7 +151,7 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
 		dev->reset_gpio = NULL;
 
 	mt76_npu_init(mdev, pci_resource_start(pdev, 0),
-		      pci_domain_nr(pdev->bus) ? 3 : 2);
+		      pdev->bus && pci_domain_nr(pdev->bus) ? 3 : 2);
 
 	ret = mt7996_mmio_wed_init(dev, pdev, false, &irq);
 	if (ret < 0)
