@@ -1173,9 +1173,22 @@ static int qseecom_tee_supp_open(struct tee_context *ctx)
 	if (ret)
 		return ret;
 
-	mutex_lock(&qtee->supp.mutex);
-	qtee->supp.users++;
-	mutex_unlock(&qtee->supp.mutex);
+	/*
+	 * One supplicant, because there is one request slot. A second process
+	 * on this device would race the first on TEE_IOC_SUPPL_RECV and the
+	 * two would consume each other's requests -- and since a request is
+	 * answered by whoever calls SUPPL_SEND next, the wrong reply would go
+	 * to the wrong application. The listener a request belongs to is in
+	 * arg.func precisely so that one process can serve them all.
+	 */
+	scoped_guard(mutex, &qtee->supp.mutex) {
+		if (qtee->supp.users) {
+			qseecom_tee_release(ctx);
+			return -EBUSY;
+		}
+
+		qtee->supp.users++;
+	}
 
 	return 0;
 }
