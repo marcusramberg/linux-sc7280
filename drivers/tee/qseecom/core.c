@@ -1212,6 +1212,10 @@ static void qseecom_tee_supp_release(struct tee_context *ctx)
  * program-header order is what the vendor's own loader does, and it is what
  * produces an image TZ accepts.
  *
+ * Confirmed on hardware rather than inferred: assembling the same files by
+ * p_offset and loading them, with an identical mdt length, gets the image
+ * rejected, while the concatenated form loads.
+ *
  * That this is only reachable on the privileged device *is* the access
  * control. Loading puts an image into the same ID space and the same secure
  * storage machinery as every other application, so it is not something an
