@@ -83,7 +83,7 @@
  * every other QSEECOM user, so it cannot be generous. Answering late is not
  * useful either: TZ has its own patience and the watchdog behind it.
  */
-#define QSEECOM_TEE_SUPP_TIMEOUT	msecs_to_jiffies(10 * MSEC_PER_SEC)
+#define QSEECOM_TEE_SUPP_TIMEOUT	secs_to_jiffies(10)
 
 /**
  * struct qseecom_tee_supp - Supplicant state.
@@ -526,14 +526,7 @@ static int qseecom_tee_app_remember(struct qseecom_tee *qtee, const char *name,
 
 static bool qseecom_tee_uuid_is_null(const u8 *uuid)
 {
-	int i;
-
-	for (i = 0; i < TEE_IOCTL_UUID_LEN; i++) {
-		if (uuid[i])
-			return false;
-	}
-
-	return true;
+	return !memchr_inv(uuid, 0, TEE_IOCTL_UUID_LEN);
 }
 
 static int qseecom_tee_get_app_name(struct tee_param *param, char *name,
@@ -1662,8 +1655,14 @@ static int qseecom_tee_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	qtee->dev = dev;
-	mutex_init(&qtee->supp.mutex);
-	mutex_init(&qtee->apps_lock);
+	ret = devm_mutex_init(dev, &qtee->supp.mutex);
+	if (ret)
+		return ret;
+
+	ret = devm_mutex_init(dev, &qtee->apps_lock);
+	if (ret)
+		return ret;
+
 	init_waitqueue_head(&qtee->supp.wq);
 	INIT_LIST_HEAD(&qtee->apps);
 
