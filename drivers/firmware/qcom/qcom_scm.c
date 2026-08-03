@@ -121,6 +121,7 @@ enum qcom_scm_qseecom_tz_cmd_app {
 	 */
 	QSEECOM_TZ_CMD_APP_START		= 1,
 	QSEECOM_TZ_CMD_APP_SEND			= 1,
+	QSEECOM_TZ_CMD_APP_SHUTDOWN		= 2,
 	QSEECOM_TZ_CMD_APP_LOOKUP		= 3,
 };
 
@@ -2521,6 +2522,42 @@ int qcom_scm_qseecom_app_load(void *img, size_t mdt_len, size_t img_len,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_load);
+
+/**
+ * qcom_scm_qseecom_app_shutdown() - Unload a QSEE application.
+ * @app_id: The ID of the application to unload.
+ *
+ * Unloads an application previously started with qcom_scm_qseecom_app_load(),
+ * releasing the secure-world memory it occupies and freeing its name for a
+ * later load. Without this, a second load of the same application is refused
+ * by TZ and only a reboot clears it.
+ *
+ * TZ echoes the application id back in the response data.
+ *
+ * Return: Zero on success, nonzero on failure.
+ */
+int qcom_scm_qseecom_app_shutdown(u32 app_id)
+{
+	struct qcom_scm_qseecom_resp res = {};
+	struct qcom_scm_desc desc = {};
+	int status;
+
+	desc.owner = QSEECOM_TZ_OWNER_QSEE_OS;
+	desc.svc = QSEECOM_TZ_SVC_APP_MGR;
+	desc.cmd = QSEECOM_TZ_CMD_APP_SHUTDOWN;
+	desc.arginfo = QCOM_SCM_ARGS(1);
+	desc.args[0] = app_id;
+
+	status = qcom_scm_qseecom_call(&desc, &res);
+	if (status)
+		return status;
+
+	if (res.result != QSEECOM_RESULT_SUCCESS)
+		return -EINVAL;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_shutdown);
 
 /**
  * qcom_scm_qseecom_app_send() - Send to and receive data from a given QSEE app.
