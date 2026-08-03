@@ -251,19 +251,7 @@ static int qseecom_tee_pool_alloc(struct tee_shm_pool *pool,
 				  struct tee_shm *shm, size_t size,
 				  size_t align)
 {
-	size_t rounded;
-	void *va;
-
-	if (align > PAGE_SIZE)
-		return -EINVAL;
-
-	/*
-	 * Round up to a whole page: the size reported here is what bounds
-	 * tee_shm_fop_mmap(), so reporting the requested size instead makes
-	 * any allocation smaller than a page impossible to map, the check
-	 * being in units of pages.
-	 */
-	rounded = roundup(size, PAGE_SIZE);
+	int ret;
 
 	/*
 	 * Ordinary cacheable pages, deliberately *not* TZ memory.
@@ -281,16 +269,20 @@ static int qseecom_tee_pool_alloc(struct tee_shm_pool *pool,
 	 * kernel read stale bytes through the uncached alias, which is how a
 	 * perfectly good application name arrived here as an empty string.
 	 * Allocating cacheable memory makes both views agree.
+	 *
+	 * The helper rounds the size up to whole pages, which is also what
+	 * bounds tee_shm_fop_mmap(): reporting the requested size instead
+	 * would make any allocation smaller than a page impossible to map.
 	 */
-	va = alloc_pages_exact(rounded, GFP_KERNEL | __GFP_ZERO);
-	if (!va)
-		return -ENOMEM;
+	ret = tee_dyn_shm_alloc_helper(shm, size, align, NULL);
+	if (ret)
+		return ret;
 
-	shm->kaddr = va;
-	shm->paddr = virt_to_phys(va);
-	shm->size = rounded;
-
-	/* Never handed to TZ directly, so there is nothing to register. */
+	/*
+	 * Nothing was registered with the secure world, so the shm must not
+	 * claim to have been. tee_shm_pool_alloc_res_mem() clears it for the
+	 * same reason.
+	 */
 	shm->flags &= ~TEE_SHM_DYNAMIC;
 
 	return 0;
@@ -299,8 +291,7 @@ static int qseecom_tee_pool_alloc(struct tee_shm_pool *pool,
 static void qseecom_tee_pool_free(struct tee_shm_pool *pool,
 				  struct tee_shm *shm)
 {
-	free_pages_exact(shm->kaddr, shm->size);
-	shm->kaddr = NULL;
+	tee_dyn_shm_free_helper(shm, NULL);
 }
 
 static void qseecom_tee_pool_destroy(struct tee_shm_pool *pool)
