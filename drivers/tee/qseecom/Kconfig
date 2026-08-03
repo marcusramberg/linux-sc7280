@@ -13,3 +13,9 @@ config TEE_QSEECOM
 	  the object-based one served by the QCOMTEE driver. Platforms that
 	  predate smcinvoke, or whose applications were built against QSEECOM,
 	  need this one.
+
+	  Note that the driver cannot validate what a command means, because it
+	  does not know any application's payload format: anyone who can open
+	  the client device may send arbitrary commands to any loaded trusted
+	  application. Restrict access to the device nodes accordingly. See
+	  Documentation/tee/qseecom.rst.
