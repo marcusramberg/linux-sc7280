@@ -65,6 +65,11 @@
 /* Physical alignment TZ requires of an application image. */
 #define QSEECOM_TEE_IMAGE_ALIGN		SZ_4M
 
+/* Sanity bound on one invoke's staging buffer, request plus response plus
+ * every patched buffer.
+ */
+#define QSEECOM_TEE_MAX_XFER		SZ_16M
+
 /* Sanity bound on an application image, so a bad size cannot exhaust memory. */
 #define QSEECOM_TEE_MAX_IMAGE		SZ_16M
 
@@ -652,7 +657,12 @@ static int qseecom_tee_check_patch(struct tee_param *voff,
 	if (width != 4 && width != 8)
 		return -EINVAL;
 
-	if (off > req_size - width)
+	/*
+	 * Both halves matter. Without the first, a request shorter than the
+	 * width makes the subtraction wrap and every offset passes, which puts
+	 * an attacker-chosen offset into a put_unaligned() further down.
+	 */
+	if (req_size < width || off > req_size - width)
 		return -EINVAL;
 
 	shm = pbuf->u.memref.shm;
@@ -734,6 +744,15 @@ static int qseecom_tee_invoke_func(struct tee_context *ctx,
 		need = req_size + rsp_size;
 		for (k = 2; k < arg->num_params; k += 2)
 			need += param[k + 1].u.memref.size;
+
+		/*
+		 * Every size here is bounded by the shared memory it refers to,
+		 * so this should not be reachable -- but the total is what the
+		 * staging buffer is sized from, and a wrapped total would size
+		 * it far too small for the copies that follow.
+		 */
+		if (need < req_size || need > QSEECOM_TEE_MAX_XFER)
+			return -EINVAL;
 
 		bc.initial_size = PAGE_ALIGN(need) + PAGE_SIZE;
 		bc.max_size = bc.initial_size;
