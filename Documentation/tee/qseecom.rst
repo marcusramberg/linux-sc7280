@@ -97,6 +97,33 @@ failure. Claiming success without having filled the request buffer leaves the
 application acting on whatever was in it, which has been observed to hang the
 secure world until the watchdog fires.
 
+Only one supplicant may be open at a time; a second gets -EBUSY.
+
+A supplicant that stops answering blocks more than itself
+=========================================================
+
+Servicing a listener request happens with the QSEECOM call lock held, and every
+QSEECOM caller shares that lock -- including in-kernel ones such as
+qcom_qseecom_uefisecapp. So a supplicant that stops answering stalls an EFI
+variable read for as long as the request takes to time out, and an application
+that will not settle can repeat that for several rounds before the driver gives
+up on it.
+
+That is inherent to serialising a single secure-world interface, and it is the
+reason the supplicant timeout is as short as it is. It is worth knowing before
+granting access to the privileged device: the blast radius of a wedged
+supplicant is every QSEECOM user on the system, not just the one that
+registered the listener.
+
+Known limitations
+=================
+
+An application this driver loaded is unloaded when its load session closes. If
+that unload fails, the application stays resident and the driver keeps its
+registry entry, so it can still be reached -- but a module unload at that point
+frees the registry, and nothing afterwards can name or unload it short of a
+reboot. TZ has no enumerate command that would let a later probe recover it.
+
 Security considerations
 =======================
 

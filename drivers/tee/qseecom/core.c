@@ -1223,6 +1223,12 @@ static void qseecom_tee_supp_close_context(struct tee_context *ctx)
 	struct qseecom_tee_listener *listener, *tmp;
 	struct qseecom_tee *qtee;
 
+	/*
+	 * Unsynchronised on purpose. ->close_context() runs from tee_release()
+	 * with no ioctl in flight on this context, so there is nothing to race
+	 * with; the flag exists only because close_context() and release() can
+	 * both be reached and the teardown must not run twice.
+	 */
 	if (!ctxdata || ctxdata->closed)
 		return;
 
