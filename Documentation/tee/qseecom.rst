@@ -111,8 +111,17 @@ quiet corner.
 
 Access to the device nodes is therefore part of the security boundary rather
 than a packaging detail -- reaching the old character device from an
-unprivileged context was itself an escalation step (CVE-2018-9411). Restrict
-them deliberately rather than leaving a permissive default: the privileged
-device to root, since it loads applications and registers listeners, and the
-client device to whichever service requires it. Widening them turns a trustlet
-bug into local privilege escalation.
+unprivileged context was itself an escalation step (CVE-2018-9411).
+
+The privileged device requires ``CAP_SYS_ADMIN`` to open. It loads code into
+the secure world and registers the services trusted applications call back
+into, which is not something to gate on file permissions alone; the TEE core
+separates it from the client device by minor number and reports
+``TEE_GEN_CAP_PRIVILEGED``, but enforces nothing itself.
+
+No such check is made on the client device, because a fingerprint or
+attestation daemon has no business running with ``CAP_SYS_ADMIN``. Guarding it
+is discretionary and mandatory access control instead: give it to the one
+service that needs it rather than leaving a permissive default, and label it in
+whatever LSM policy the system uses. Widening it turns a trustlet bug into
+local privilege escalation.

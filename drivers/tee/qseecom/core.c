@@ -27,6 +27,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/capability.h>
 #include <linux/cleanup.h>
 #include <linux/errno.h>
 #include <linux/list.h>
@@ -1035,6 +1036,17 @@ static int qseecom_tee_supp_open(struct tee_context *ctx)
 {
 	struct qseecom_tee *qtee = tee_get_drvdata(ctx->teedev);
 	int ret;
+
+	/*
+	 * This device loads code into the secure world and registers the
+	 * services trusted applications call back into, so it is not something
+	 * to hand out on file permissions alone. The TEE core separates the
+	 * privileged device from the client one by minor number and says so in
+	 * TEE_IOC_VERSION, but enforces nothing itself, which leaves the whole
+	 * guard resting on whatever created the node.
+	 */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
 
 	ret = qseecom_tee_open(ctx);
 	if (ret)
