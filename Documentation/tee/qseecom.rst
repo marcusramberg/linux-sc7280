@@ -5,12 +5,32 @@ QSEECOM Driver
 ==============
 
 The QSEECOM driver exposes Qualcomm's QSEE trusted applications, reached over
-the legacy command-based QSEECOM interface, through the TEE subsystem. It is
-distinct from the QCOMTEE driver, which serves the newer object-based
-(smcinvoke) interface; platforms that predate smcinvoke, or whose applications
-were built against QSEECOM, need this one.
+the command-based QSEECOM interface, through the TEE subsystem.
 
 The implementation reports ``TEE_IMPL_ID_QSEECOM``.
+
+Relationship to the QTEE driver
+===============================
+
+Qualcomm's secure world can be reached through two different interfaces, and
+the distinction decides which driver a given application needs.
+
+QSEECOM is command-based: load an application by name, send it a numbered
+command with a request and a response buffer, and service the listener requests
+it raises while it works. smcinvoke, served by the QTEE driver
+(:doc:`qtee`), is object-based: services are objects carrying operations that
+return results and further objects.
+
+These are not two routes to the same thing. A trusted application is built
+against one interface or the other, and one that answers commands over QSEECOM
+is not reachable as an smcinvoke object. A SoC may well offer both -- the
+interfaces coexist -- so QTEE being available on a platform says nothing about
+whether the applications in that platform's firmware can be reached through it.
+
+This driver therefore is not a fallback for hardware too old for smcinvoke. It
+is for the QSEECOM-era applications that ship in firmware and remain the only
+implementation of the functions they provide on those devices, including on
+SoCs new enough to support smcinvoke as well.
 
 Devices
 =======
