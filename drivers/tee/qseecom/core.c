@@ -1321,13 +1321,23 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 		return ret;
 	}
 
+	/*
+	 * From here the application is live in TZ. Anything that fails now has
+	 * to put it back, because nothing else can: without a session there is
+	 * no close to unload it on, and without a registry entry the name
+	 * cannot even be resolved again. TZ would refuse to load it a second
+	 * time and only a reboot would clear it -- exactly the trap unloading
+	 * on session close exists to avoid.
+	 */
 	ret = qseecom_tee_app_remember(qtee, app_name, app_id);
 	if (ret)
-		return ret;
+		goto err_shutdown;
 
 	ret = qseecom_tee_session_add(ctxdata, app_id, NULL, &arg->session);
-	if (ret)
-		return ret;
+	if (ret) {
+		qseecom_tee_app_forget(qtee, app_id);
+		goto err_shutdown;
+	}
 
 	dev_info(qtee->dev, "loaded '%s' as app %u\n", app_name, app_id);
 
@@ -1335,6 +1345,13 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	arg->ret_origin = 0;
 
 	return 0;
+
+err_shutdown:
+	if (qcom_scm_qseecom_app_shutdown(app_id))
+		dev_err(qtee->dev,
+			"app %u loaded but could not be unloaded after a failed load; it is stuck until reboot\n",
+			app_id);
+	return ret;
 }
 
 /*
