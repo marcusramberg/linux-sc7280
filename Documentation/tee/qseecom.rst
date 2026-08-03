@@ -32,9 +32,11 @@ field must be zero.
 Invoking a command
 ==================
 
-Commands take four parameters. The request header and the response share one
-buffer, the response following the request; the command payload is a separate
-allocation.
+Commands take an even number of parameters, from two to ten. The first two are
+the request and the response, which share one buffer with the response
+following the request. Each further pair is an address-patch descriptor and the
+buffer it names, up to four of them; the four-parameter form below is the usual
+one.
 
 =====  ==============  ===================================================
 param  attr            meaning
