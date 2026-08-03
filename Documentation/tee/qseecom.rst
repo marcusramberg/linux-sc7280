@@ -115,6 +115,18 @@ other's requests. The first context to receive claims that role, and a receive
 or send from any other is refused. Merely opening the device is not claiming
 it, because loading an application opens the same device.
 
+``TEE_IOC_SUPPL_RECV`` returns two parameters: a VALUE_INPUT whose first
+element identifies the request, and a MEMREF_INOUT naming the listener buffer
+to look at. The identifier is an INPUT because the direction is the
+supplicant's: the kernel is handing it a value, exactly as OP-TEE does. ``TEE_IOC_SUPPL_SEND`` takes that identifier back as a VALUE_OUTPUT
+in its first parameter. The change of attribute is not a typo: parameter
+directions on this interface are named from the supplicant's point of view, and
+the core only transfers a value that is marked INPUT on the way out to the
+supplicant and OUTPUT on the way back in. A supplicant that overran the timeout returns to find
+its request abandoned and possibly a new one in the slot; echoing the
+identifier is what lets an answer to the old request be rejected with
+``-ESTALE`` instead of being applied to the new one.
+
 Anything other than an explicit success is reported to the secure world as a
 failure. Claiming success without having filled the request buffer leaves the
 application acting on whatever was in it, which has been observed to hang the
