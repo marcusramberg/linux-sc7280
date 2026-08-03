@@ -456,15 +456,21 @@ static bool qseecom_tee_app_current(struct qseecom_tee *qtee, u32 app_id,
 	return false;
 }
 
-/* Drop an application from the registry once TZ has unloaded it. */
-static void qseecom_tee_app_forget(struct qseecom_tee *qtee, u32 app_id)
+/*
+ * Drop an application from the registry once TZ has unloaded it.
+ *
+ * Matched on the generation as well as the id, so that unloading cannot remove
+ * an entry that merely happens to have been given the same id since.
+ */
+static void qseecom_tee_app_forget(struct qseecom_tee *qtee, u32 app_id,
+				   u32 gen)
 {
 	struct qseecom_tee_app *app;
 
 	guard(mutex)(&qtee->apps_lock);
 
 	list_for_each_entry(app, &qtee->apps, node) {
-		if (app->app_id == app_id) {
+		if (app->app_id == app_id && app->gen == gen) {
 			list_del(&app->node);
 			kfree(app);
 			return;
@@ -485,7 +491,12 @@ static int qseecom_tee_app_remember(struct qseecom_tee *qtee, const char *name,
 	strscpy(app->name, name, sizeof(app->name));
 
 	mutex_lock(&qtee->apps_lock);
-	app->gen = ++qtee->next_app_gen;
+
+	/* gen 0 means "boot-loaded, cannot be replaced"; never hand it out. */
+	do {
+		app->gen = ++qtee->next_app_gen;
+	} while (!app->gen);
+
 	if (gen)
 		*gen = app->gen;
 
@@ -496,9 +507,16 @@ static int qseecom_tee_app_remember(struct qseecom_tee *qtee, const char *name,
 	 * because lookups take the first match and a stale entry would
 	 * otherwise shadow the live one for good, failing every command with
 	 * an id TZ no longer knows.
+	 *
+	 * An id is just as identifying, and for the same reason: TZ hands out
+	 * small integers and reuses them, so an application unloaded out of
+	 * band and a different one loaded afterwards can arrive here sharing an
+	 * id. Evicting on either key keeps at most one entry per id, which is
+	 * what makes an id lookup answer about the application that holds it
+	 * now rather than about a dead one that got there first.
 	 */
 	list_for_each_entry(old, &qtee->apps, node) {
-		if (!strcmp(old->name, name)) {
+		if (!strcmp(old->name, name) || old->app_id == app_id) {
 			list_del(&old->node);
 			kfree(old);
 			break;
@@ -1501,7 +1519,7 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	ret = qseecom_tee_session_add(ctxdata, app_id, app_gen, NULL,
 				      &arg->session);
 	if (ret) {
-		qseecom_tee_app_forget(qtee, app_id);
+		qseecom_tee_app_forget(qtee, app_id, app_gen);
 		goto err_shutdown;
 	}
 
@@ -1647,7 +1665,7 @@ static int qseecom_tee_supp_close_session(struct tee_context *ctx, u32 session)
 	struct qseecom_tee_context *ctxdata = ctx->data;
 	struct qseecom_tee_listener *listener;
 	struct qseecom_tee_session *sess;
-	u32 app_id;
+	u32 app_id, app_gen;
 	int ret;
 
 	mutex_lock(&ctxdata->mutex);
@@ -1664,6 +1682,7 @@ static int qseecom_tee_supp_close_session(struct tee_context *ctx, u32 session)
 		return -EINVAL;
 
 	app_id = sess->app_id;
+	app_gen = sess->app_gen;
 	kfree(sess);
 
 	/*
@@ -1688,7 +1707,7 @@ static int qseecom_tee_supp_close_session(struct tee_context *ctx, u32 session)
 				dev_warn(ctxdata->qtee->dev,
 					 "unloading app %u: %d\n", app_id, ret);
 			else
-				qseecom_tee_app_forget(ctxdata->qtee, app_id);
+				qseecom_tee_app_forget(ctxdata->qtee, app_id, app_gen);
 		}
 		return 0;
 	}
