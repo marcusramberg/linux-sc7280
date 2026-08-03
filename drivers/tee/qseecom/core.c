@@ -1080,14 +1080,19 @@ static int qseecom_tee_supp_recv(struct tee_context *ctx, u32 *func,
 	 * Nothing meaningful can be passed in, so refuse anything that is not
 	 * empty rather than silently discarding it.
 	 */
-	for (i = 0; i < *num_params; i++) {
+	for (i = 0; i < *num_params; i++)
 		if (tee_param_is_memref(param + i) && param[i].u.memref.shm)
 			tee_shm_put(param[i].u.memref.shm);
 
+	/*
+	 * Only reject once every reference has been dropped. Returning from
+	 * inside the loop above would strand the references of every parameter
+	 * after the offending one.
+	 */
+	for (i = 0; i < *num_params; i++)
 		if ((param[i].attr & TEE_IOCTL_PARAM_ATTR_TYPE_MASK) !=
 		    TEE_IOCTL_PARAM_ATTR_TYPE_NONE)
 			return -EINVAL;
-	}
 
 	/*
 	 * Take the request under the lock, and wait outside it.
