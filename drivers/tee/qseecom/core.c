@@ -120,6 +120,9 @@ struct qseecom_tee_supp {
  * @mempool:     TZ memory. Kernel-only: everything TZ reads or writes is
  *               staged through here, and none of it is ever mapped to user
  *               space.
+ * @apps_lock:   Protects @apps.
+ * @apps:        Applications this driver loaded, since TZ will not resolve
+ *               them by name afterwards.
  * @supp:        Supplicant state.
  */
 struct qseecom_tee {
