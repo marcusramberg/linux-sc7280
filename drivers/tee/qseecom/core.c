@@ -1597,7 +1597,7 @@ static int qseecom_tee_probe(struct platform_device *pdev)
 
 	ret = tee_device_register(qtee->supp_teedev);
 	if (ret)
-		goto err_unreg_teedev;
+		goto err_unreg_supp_teedev;
 
 	platform_set_drvdata(pdev, qtee);
 
