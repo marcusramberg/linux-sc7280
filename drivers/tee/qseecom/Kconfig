@@ -13,10 +13,13 @@ config TEE_QSEECOM
 	  This is the command-based Qualcomm interface, as distinct from the
 	  object-based smcinvoke interface served by the QCOMTEE driver. The
 	  two are not alternative routes to the same applications: a trusted
-	  application is built against one or the other, and a SoC may offer
-	  both. Say Y if the firmware carries applications that answer over
-	  QSEECOM, which is the case on many platforms that also support
-	  smcinvoke.
+	  application is built against one or the other, so what a system needs
+	  is decided by the applications in its firmware rather than by the age
+	  of its SoC. Platforms offering both interfaces are common, and may
+	  still carry applications that answer only over QSEECOM.
+
+	  Say Y if the firmware carries such applications. See
+	  Documentation/tee/qseecom.rst.
 
 	  Note that the driver cannot validate what a command means, because it
 	  does not know any application's payload format: anyone who can open

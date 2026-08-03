@@ -9,28 +9,41 @@ the command-based QSEECOM interface, through the TEE subsystem.
 
 The implementation reports ``TEE_IMPL_ID_QSEECOM``.
 
-Relationship to the QTEE driver
-===============================
+Why this driver
+===============
 
-Qualcomm's secure world can be reached through two different interfaces, and
-the distinction decides which driver a given application needs.
-
+Qualcomm's secure world can be reached through two different interfaces.
 QSEECOM is command-based: load an application by name, send it a numbered
 command with a request and a response buffer, and service the listener requests
-it raises while it works. smcinvoke, served by the QTEE driver
-(:doc:`qtee`), is object-based: services are objects carrying operations that
-return results and further objects.
+it raises while it works. smcinvoke, served by the QTEE driver (:doc:`qtee`),
+is object-based: services are objects carrying operations that return results
+and further objects.
 
-These are not two routes to the same thing. A trusted application is built
+They are not two routes to the same thing. A trusted application is built
 against one interface or the other, and one that answers commands over QSEECOM
-is not reachable as an smcinvoke object. A SoC may well offer both -- the
-interfaces coexist -- so QTEE being available on a platform says nothing about
-whether the applications in that platform's firmware can be reached through it.
+is not reachable as an smcinvoke object. Which driver a system needs is
+therefore decided by the applications in its firmware, not by the age of its
+SoC. Three cases arise, and this driver is what serves the first two:
 
-This driver therefore is not a fallback for hardware too old for smcinvoke. It
-is for the QSEECOM-era applications that ship in firmware and remain the only
-implementation of the functions they provide on those devices, including on
-SoCs new enough to support smcinvoke as well.
+Platforms predating smcinvoke
+	QSEECOM is the only interface they have.
+
+Platforms offering both
+	The common case, and the one the "legacy" label obscures. smcinvoke has
+	been available on Qualcomm SoCs for a long time, but applications
+	continued to be built against QSEECOM, so a platform that supports
+	smcinvoke may still carry firmware that only answers over QSEECOM. The
+	SM8250 this driver was developed against is such a platform: it exposes
+	both interfaces, and its fingerprint application answers only on
+	QSEECOM.
+
+Platforms where smcinvoke has displaced QSEECOM entirely
+	Served by the QTEE driver; this one is not needed.
+
+So the driver is not a fallback for old hardware. It is what makes the
+QSEECOM-era applications shipped in a platform's firmware reachable at all, and
+on many devices those remain the only implementation of the functions they
+provide.
 
 Devices
 =======
