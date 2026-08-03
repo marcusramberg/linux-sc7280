@@ -963,6 +963,37 @@ static bool qseecom_tee_supp_pending(struct qseecom_tee_supp *supp)
 	return pending;
 }
 
+/*
+ * Withdraw a listener and release what it held.
+ *
+ * The SCM layer only drops a listener from its registry once TZ has confirmed
+ * the deregistration; on failure the listener stays on that list, live, with
+ * its ->service pointer still reachable. Freeing regardless would hand the
+ * secure world a callback into freed memory the next time an application
+ * raised a request for that id.
+ *
+ * So on failure keep everything and say so. Leaking a listener is bad; calling
+ * through a freed function pointer from the secure world is worse, and there
+ * is no third option while TZ can still name it.
+ */
+static void qseecom_tee_listener_release(struct qseecom_tee *qtee,
+					 struct qseecom_tee_listener *listener)
+{
+	int ret;
+
+	ret = qcom_scm_qseecom_listener_unregister(&listener->scm);
+	if (ret) {
+		dev_err(qtee->dev,
+			"listener %u: deregistration failed (%d), leaking it -- TZ can still reach it\n",
+			listener->scm.id, ret);
+		return;
+	}
+
+	qcom_tzmem_free(listener->buf);
+	tee_shm_put(listener->shm);
+	kfree(listener);
+}
+
 static int qseecom_tee_supp_recv(struct tee_context *ctx, u32 *func,
 				 u32 *num_params, struct tee_param *param)
 {
@@ -1129,10 +1160,7 @@ static void qseecom_tee_supp_close_context(struct tee_context *ctx)
 
 	list_for_each_entry_safe(listener, tmp, &ctxdata->listeners, node) {
 		list_del(&listener->node);
-		qcom_scm_qseecom_listener_unregister(&listener->scm);
-		qcom_tzmem_free(listener->buf);
-		tee_shm_put(listener->shm);
-		kfree(listener);
+		qseecom_tee_listener_release(ctxdata->qtee, listener);
 	}
 }
 
@@ -1385,10 +1413,7 @@ static int qseecom_tee_supp_open_session(struct tee_context *ctx,
 		mutex_lock(&ctxdata->mutex);
 		list_del(&listener->node);
 		mutex_unlock(&ctxdata->mutex);
-		qcom_scm_qseecom_listener_unregister(&listener->scm);
-		qcom_tzmem_free(listener->buf);
-		tee_shm_put(shm);
-		kfree(listener);
+		qseecom_tee_listener_release(qtee, listener);
 		return ret;
 	}
 
@@ -1451,10 +1476,8 @@ static int qseecom_tee_supp_close_session(struct tee_context *ctx, u32 session)
 	 * answer holds the lock this needs. A supplicant that answers before
 	 * closing never sees it.
 	 */
-	ret = qcom_scm_qseecom_listener_unregister(&listener->scm);
-	qcom_tzmem_free(listener->buf);
-	tee_shm_put(listener->shm);
-	kfree(listener);
+	qseecom_tee_listener_release(ctxdata->qtee, listener);
+	ret = 0;
 
 	return ret;
 }
