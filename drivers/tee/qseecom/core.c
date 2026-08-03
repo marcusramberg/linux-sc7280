@@ -799,8 +799,19 @@ static int qseecom_tee_invoke_func(struct tee_context *ctx,
 			void *pv;
 
 			pv = tee_shm_get_va(pshm, param[k + 1].u.memref.shm_offs);
-			if (IS_ERR(pv))
-				continue;
+			if (IS_ERR(pv)) {
+				/*
+				 * Cannot happen -- check_patch() validated
+				 * these memrefs -- but skipping the copy would
+				 * desynchronise the staging layout from the
+				 * copy-back loop *and* leave whatever user
+				 * space put at that offset in a field the
+				 * application dereferences in the secure
+				 * world. Refuse the invoke instead.
+				 */
+				ret = PTR_ERR(pv);
+				goto out_free;
+			}
 
 			memcpy(b + off, pv, plen);
 			pp = qcom_tzmem_to_phys(b + off);
