@@ -58,6 +58,12 @@ Buffers the secure world reads are copied through kernel-only memory, so user
 space cannot change them after validation while the secure world is reading
 them.
 
+The size of a MEMREF_OUTPUT is **not** updated on return. QSEECOM reports no
+response length, so there is nothing to report one from; the size a caller
+passes in is the size of the buffer it offered, and how much of it is
+meaningful is for the application's own protocol to say. Callers that expect
+the TEE convention of a written-length being returned will be disappointed.
+
 That is a narrow guarantee and should not be read as containment. The client
 chooses which offsets to name in patch descriptors, so it can leave any value
 it likes at any offset it declines to patch, and an application is free to
@@ -126,6 +132,13 @@ supplicant and OUTPUT on the way back in. A supplicant that overran the timeout 
 its request abandoned and possibly a new one in the slot; echoing the
 identifier is what lets an answer to the old request be rejected with
 ``-ESTALE`` instead of being applied to the new one.
+
+If a listener cannot be withdrawn from the secure world, the driver leaks it
+deliberately rather than freeing memory TZ can still write to. That keeps a
+reference on the shared buffer, which pins the context, so ``rmmod`` afterwards
+blocks in ``tee_device_unregister()``. Leaking is still the right trade --
+freeing it invites the secure world to write into memory that has been handed
+back -- but a module that will not unload is the visible symptom of it.
 
 Anything other than an explicit success is reported to the secure world as a
 failure. Claiming success without having filled the request buffer leaves the
