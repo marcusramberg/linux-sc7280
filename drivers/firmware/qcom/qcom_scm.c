@@ -2483,6 +2483,7 @@ EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_get_id);
 int qcom_scm_qseecom_app_load(void *img, size_t mdt_len, size_t img_len,
 			      u32 *app_id)
 {
+	phys_addr_t img_phys;
 	struct qcom_scm_qseecom_resp res = {};
 	struct qcom_scm_desc desc = {};
 	int status;
@@ -2501,7 +2502,11 @@ int qcom_scm_qseecom_app_load(void *img, size_t mdt_len, size_t img_len,
 	desc.arginfo = QCOM_SCM_ARGS(3);
 	desc.args[0] = mdt_len;
 	desc.args[1] = img_len;
-	desc.args[2] = qcom_tzmem_to_phys(img);
+	img_phys = qcom_tzmem_to_phys(img);
+	if (!img_phys)
+		return -EINVAL;
+
+	desc.args[2] = img_phys;
 
 	status = qcom_scm_qseecom_call(&desc, &res);
 	if (status)
