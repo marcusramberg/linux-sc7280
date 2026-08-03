@@ -91,6 +91,9 @@
  * @wq:       Waited on by both sides of that handshake.
  * @req:      Request waiting to be picked up or answered, if any.
  * @taken:    @req has been handed to a supplicant and is awaiting its answer.
+ * @pending:  A request is posted. Readable without @mutex, for the wait.
+ * @req_gen:  Bumped for every request posted.
+ * @taken_gen: The generation the supplicant last took.
  * @answered: A supplicant has answered @req.
  * @status:   That answer.
  * @users:    Number of open contexts on the supplicant device.
@@ -105,7 +108,9 @@ struct qseecom_tee_supp {
 	wait_queue_head_t wq;
 	struct qseecom_tee_listener *req;
 	bool taken;
-	bool pending;		/* readable without the mutex, for the wait */
+	bool pending;
+	u32 req_gen;
+	u32 taken_gen;
 	bool answered;
 	u32 status;
 	unsigned int users;
@@ -978,6 +983,7 @@ static int qseecom_tee_listener_service(struct qcom_scm_qseecom_listener *scm)
 
 		supp->req = listener;
 		supp->taken = false;
+		supp->req_gen++;
 		WRITE_ONCE(supp->pending, true);
 		supp->answered = false;
 		supp->status = QSEECOM_LISTENER_FAILURE;
@@ -1098,6 +1104,7 @@ static int qseecom_tee_supp_recv(struct tee_context *ctx, u32 *func,
 			listener = supp->req;
 			if (listener && !supp->taken) {
 				supp->taken = true;
+				supp->taken_gen = supp->req_gen;
 				goto got_request;
 			}
 		}
@@ -1135,6 +1142,17 @@ static int qseecom_tee_supp_send(struct tee_context *ctx, u32 ret,
 	scoped_guard(mutex, &supp->mutex) {
 		if (!supp->req || !supp->taken)
 			return -EINVAL;
+
+		/*
+		 * Refuse an answer to a request that is no longer the one
+		 * outstanding. A supplicant that overran the timeout comes back
+		 * to find its request abandoned and possibly a new one in the
+		 * slot; applying the stale answer would hand one application
+		 * the reply meant for another, and a bogus success is what
+		 * wedges the secure world.
+		 */
+		if (supp->taken_gen != supp->req_gen)
+			return -ESTALE;
 
 		/*
 		 * Anything other than success is reported as failure, and the
