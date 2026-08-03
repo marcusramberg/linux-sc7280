@@ -970,10 +970,31 @@ static int qseecom_tee_supp_recv(struct tee_context *ctx, u32 *func,
 	struct qseecom_tee *qtee = ctxdata->qtee;
 	struct qseecom_tee_supp *supp = &qtee->supp;
 	struct qseecom_tee_listener *listener;
+	unsigned int i;
 	int ret;
 
 	if (*num_params < 1)
 		return -EINVAL;
+
+	/*
+	 * The core resolved any memref the caller passed and took a reference
+	 * for it, and deliberately does not drop them on this path -- see the
+	 * comment on free_params() in tee_ioctl_supp_recv(). Since param[0] is
+	 * about to be overwritten wholesale, dropping them is ours to do, and
+	 * failing to leaves a reference on a tee_shm, which pins the context,
+	 * which strands the device on unregister.
+	 *
+	 * Nothing meaningful can be passed in, so refuse anything that is not
+	 * empty rather than silently discarding it.
+	 */
+	for (i = 0; i < *num_params; i++) {
+		if (tee_param_is_memref(param + i) && param[i].u.memref.shm)
+			tee_shm_put(param[i].u.memref.shm);
+
+		if ((param[i].attr & TEE_IOCTL_PARAM_ATTR_TYPE_MASK) !=
+		    TEE_IOCTL_PARAM_ATTR_TYPE_NONE)
+			return -EINVAL;
+	}
 
 	ret = wait_event_interruptible(supp->wq,
 				       qseecom_tee_supp_pending(supp));
