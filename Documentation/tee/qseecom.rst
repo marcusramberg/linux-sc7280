@@ -67,9 +67,28 @@ it cannot validate a protocol it does not know.
 Loading applications
 ====================
 
-A load session is opened on the privileged device with the application name,
-its image and the ``.mdt`` length. QSEE keeps the name it was loaded under,
-which is what a later lookup matches.
+A load session is opened on the privileged device with a single MEMREF_INPUT
+holding the application name. The image is *not* passed in: the driver fetches
+``<name>.mdt`` and its ``.bNN`` segments with ``request_firmware()`` and
+assembles them itself, so what can be loaded is whatever the firmware search
+path holds rather than whatever bytes a process assembles. This is the same
+contract amdtee uses.
+
+The name is therefore part of a firmware path and is validated as one: it must
+be non-empty, must fit ``QSEECOM_TEE_MAX_APP_NAME``, and must not contain ``/``
+or be ``.`` or ``..``.
+
+Assembly is not what ``qcom_mdt_load()`` does. That places each segment at its
+``p_paddr`` for a remoteproc carveout, whereas QSEE's ``APP_START`` takes one
+contiguous buffer -- the ``.mdt`` followed by the segment payloads in
+program-header order -- described by an ``.mdt`` length and a total length.
+``qcom_mdt_read_image()`` produces that form, keeping the format knowledge in
+``mdt_loader.c`` rather than duplicating a parser here. For real images the
+program headers cannot be used as a file layout at all: segments have been
+observed declaring ``p_offset`` 0, which overlaps the headers being parsed, and
+two segments declaring the same ``p_offset`` with different sizes.
+
+QSEE keeps the name it was loaded under, which is what a later lookup matches.
 
 Closing the load session unloads the application. This matters because QSEE
 refuses to load an application that is already loaded, and because an

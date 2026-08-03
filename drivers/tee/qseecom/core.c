@@ -30,6 +30,7 @@
 #include <linux/capability.h>
 #include <linux/cleanup.h>
 #include <linux/errno.h>
+#include <linux/firmware.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -46,6 +47,7 @@
 
 #include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/firmware/qcom/qcom_tzmem.h>
+#include <linux/soc/qcom/mdt_loader.h>
 
 #define QSEECOM_TEE_MAX_APP_NAME	64
 
@@ -549,6 +551,13 @@ static int qseecom_tee_get_app_name(struct tee_param *param, char *name,
 
 	if (strnlen(va, size) == size)
 		return -EINVAL;	/* not NUL-terminated within the memref */
+
+	/*
+	 * The name becomes part of a firmware path, so it must name a file and
+	 * not a route out of the firmware directory.
+	 */
+	if (strchr(va, '/') || !strcmp(va, ".") || !strcmp(va, ".."))
+		return -EINVAL;
 
 	strscpy(name, va, name_len);
 
@@ -1273,33 +1282,36 @@ static void qseecom_tee_supp_release(struct tee_context *ctx)
 }
 
 /*
- * Load an application from an image user space assembled, and remember what TZ
- * called it.
+ * Load an application from firmware the kernel fetches itself, and remember
+ * what TZ called it.
  *
- * The kernel deliberately does not go looking for the image itself. Where TA
- * images live and how the pieces go together -- the .mdt followed by every
- * .bNN in program-header order -- is firmware layout policy, and it belongs in
- * user space with the rest of it.
+ * The caller names an application; it does not supply one. Everything that
+ * ends up in TZ comes from request_firmware(), so what may be loaded is
+ * whatever the firmware search path holds -- the same contract amdtee has --
+ * rather than whatever bytes a process cares to assemble. A signed image is
+ * not by itself an argument for taking it from user space: the caller still
+ * chooses which signed image, and TZ has no notion of which one the kernel
+ * meant to run.
  *
- * qcom_mdt_load() is not the missing piece here, despite handling the same
- * file format. It solves the remoteproc problem: scatter each segment to its
- * p_paddr inside a carveout. QSEECOM's APP_START instead takes one contiguous
- * buffer -- the .mdt followed by the segment payloads, with an mdt length and a
- * total length -- so the two want different things from the same files.
+ * qcom_mdt_load() cannot be used as-is, despite handling the same file format.
+ * It solves the remoteproc problem: scatter each segment to its p_paddr inside
+ * a carveout. QSEECOM's APP_START instead takes one contiguous buffer -- the
+ * .mdt followed by the segment payloads, with an mdt length and a total length
+ * -- so the two want different things from the same files. Hence
+ * qcom_mdt_read_image(), which keeps the format knowledge next to the rest of
+ * it in mdt_loader.c instead of growing a second parser here.
  *
- * The program headers cannot even be read as a file layout for this image.
+ * The program headers cannot be read as a file layout for this image at all.
  * Taking a real one (Goodix gfenu): segment 0 has p_offset 0, which would
- * overwrite the very ELF and program headers being parsed, and segments 6 and 7
- * declare the same p_offset and the same p_paddr with different sizes, so
+ * overwrite the very ELF and program headers being parsed, and segments 6 and
+ * 7 declare the same p_offset and the same p_paddr with different sizes, so
  * placing by p_offset makes one overwrite the other. Concatenation in
  * program-header order is what the vendor's own loader does, and it is what
- * produces an image TZ accepts.
+ * produces an image TZ accepts. Confirmed on hardware rather than inferred:
+ * assembling the same files by p_offset, with an identical mdt length, gets
+ * the image rejected, while the concatenated form loads.
  *
- * Confirmed on hardware rather than inferred: assembling the same files by
- * p_offset and loading them, with an identical mdt length, gets the image
- * rejected, while the concatenated form loads.
- *
- * That this is only reachable on the privileged device *is* the access
+ * That loading is only reachable on the privileged device *is* the access
  * control. Loading puts an image into the same ID space and the same secure
  * storage machinery as every other application, so it is not something an
  * ordinary client should be able to do, and answering "who may load" with
@@ -1315,46 +1327,43 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	struct qcom_tzmem_pool_config pool_config = {
 		.policy = QCOM_TZMEM_POLICY_STATIC,
 	};
+	char fw_name[QSEECOM_TEE_MAX_APP_NAME + sizeof(".mdt")];
 	char app_name[QSEECOM_TEE_MAX_APP_NAME];
 	size_t img_len, mdt_len, stage_len;
 	phys_addr_t stage_phys, img_phys;
-	void __user *img;
+	const struct firmware *mdt;
 	void *stage, *aligned;
+	ssize_t len;
 	struct qcom_tzmem_pool *pool;
 	u32 app_id;
 	int ret;
 
-	if (arg->num_params != 3)
+	if (arg->num_params != 1)
 		return -EINVAL;
 
 	ret = qseecom_tee_get_app_name(&param[0], app_name, sizeof(app_name));
 	if (ret)
 		return ret;
 
-	/*
-	 * The image comes in as a plain user buffer rather than shared memory.
-	 * It is only ever read once, on its way into the staging buffer below,
-	 * so putting five megabytes through the TZ memory pool to get it here
-	 * would waste a scarce resource -- and worse, permanently enlarge the
-	 * shared pool, which never shrinks.
-	 */
-	if ((param[1].attr & TEE_IOCTL_PARAM_ATTR_TYPE_MASK) !=
-	    TEE_IOCTL_PARAM_ATTR_TYPE_UBUF_INPUT)
-		return -EINVAL;
+	snprintf(fw_name, sizeof(fw_name), "%s.mdt", app_name);
 
-	if ((param[2].attr & TEE_IOCTL_PARAM_ATTR_TYPE_MASK) !=
-	    TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT)
-		return -EINVAL;
+	ret = request_firmware(&mdt, fw_name, qtee->dev);
+	if (ret)
+		return ret;
 
-	img = param[1].u.ubuf.uaddr;
-	img_len = param[1].u.ubuf.size;
-	mdt_len = param[2].u.value.a;
+	len = qcom_mdt_get_image_size(mdt);
+	if (len < 0) {
+		ret = len;
+		goto out_release;
+	}
 
-	if (!img || !img_len || !mdt_len || mdt_len > img_len)
-		return -EINVAL;
+	if (len > QSEECOM_TEE_MAX_IMAGE) {
+		ret = -EFBIG;
+		goto out_release;
+	}
 
-	if (img_len > QSEECOM_TEE_MAX_IMAGE)
-		return -EINVAL;
+	img_len = len;
+	mdt_len = mdt->size;
 
 	/*
 	 * Stage the image through a pool of its own rather than the shared one.
@@ -1375,13 +1384,16 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	pool_config.max_size = stage_len;
 
 	pool = qcom_tzmem_pool_new(&pool_config);
-	if (IS_ERR(pool))
-		return PTR_ERR(pool);
+	if (IS_ERR(pool)) {
+		ret = PTR_ERR(pool);
+		goto out_release;
+	}
 
 	stage = qcom_tzmem_alloc(pool, stage_len, GFP_KERNEL);
 	if (!stage) {
 		qcom_tzmem_pool_free(pool);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out_release;
 	}
 
 	/* The area is physically contiguous, so an offset applies to both. */
@@ -1389,16 +1401,16 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	img_phys = ALIGN(stage_phys, QSEECOM_TEE_IMAGE_ALIGN);
 	aligned = stage + (img_phys - stage_phys);
 
-	if (copy_from_user(aligned, img, img_len)) {
-		qcom_tzmem_free(stage);
-		qcom_tzmem_pool_free(pool);
-		return -EFAULT;
-	}
-
-	ret = qcom_scm_qseecom_app_load(aligned, mdt_len, img_len, &app_id);
+	len = qcom_mdt_read_image(qtee->dev, mdt, fw_name, aligned, img_len);
+	if (len < 0)
+		ret = len;
+	else
+		ret = qcom_scm_qseecom_app_load(aligned, mdt_len, img_len,
+						&app_id);
 
 	qcom_tzmem_free(stage);
 	qcom_tzmem_pool_free(pool);
+	release_firmware(mdt);
 
 	if (ret) {
 		dev_warn(qtee->dev, "failed to load '%s': %d\n", app_name, ret);
@@ -1430,6 +1442,10 @@ static int qseecom_tee_supp_load_app(struct tee_context *ctx,
 	arg->ret_origin = 0;
 
 	return 0;
+
+out_release:
+	release_firmware(mdt);
+	return ret;
 
 err_shutdown:
 	if (qcom_scm_qseecom_app_shutdown(app_id))
