@@ -56,6 +56,12 @@ Buffers the secure world reads are copied through kernel-only memory, so user
 space cannot change them after validation while the secure world is reading
 them.
 
+That is a narrow guarantee and should not be read as containment. The client
+chooses which offsets to name in patch descriptors, so it can leave any value
+it likes at any offset it declines to patch, and an application is free to
+treat that as an address. The driver validates the patches it is asked to make;
+it cannot validate a protocol it does not know.
+
 Loading applications
 ====================
 
