@@ -111,7 +111,9 @@ There is **one supplicant queue per device**, not one per listener. Each
 received request reports the listener it belongs to in ``arg.func``, so a
 single supplicant can and must serve them all: two processes each registering a
 different listener would race on ``TEE_IOC_SUPPL_RECV`` and consume each
-other's requests.
+other's requests. The first context to receive claims that role, and a receive
+or send from any other is refused. Merely opening the device is not claiming
+it, because loading an application opens the same device.
 
 Anything other than an explicit success is reported to the secure world as a
 failure. Claiming success without having filled the request buffer leaves the
