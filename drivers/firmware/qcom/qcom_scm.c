@@ -2179,23 +2179,41 @@ static int qcom_scm_qseecom_service_listeners(struct qcom_scm_qseecom_resp *res)
 
 	while (res->result == QSEECOM_RESULT_INCOMPLETE) {
 		if (res->resp_type != QSEECOM_SCM_RES_QSEOS_LISTENER_ID) {
+			/*
+			 * No listener id to answer with, so the application
+			 * stays parked in TZ and every later QSEECOM call
+			 * returns -EBUSY until the device is power cycled.
+			 * Nothing here can recover it; say so plainly rather
+			 * than leaving the next person to work out why the
+			 * interface went dead.
+			 */
 			dev_err(__scm->dev,
-				"qseecom: incomplete call with unexpected response type %llx\n",
+				"qseecom: incomplete call with unexpected response type %llx; the interface is now stuck until reboot\n",
 				res->resp_type);
 			return -EPROTO;
 		}
 
+		if (res->data > U32_MAX)
+			return -EINVAL;
+
+		id = res->data;
+
 		if (++rounds > QSEECOM_MAX_LISTENER_ROUNDS) {
+			/*
+			 * Answer failure before giving up. The application is
+			 * parked in TZ waiting for this listener, and leaving
+			 * it there makes every later QSEECOM call return
+			 * -EBUSY until the device is power cycled -- so tell
+			 * it the request failed and let it error out instead.
+			 */
 			dev_err(__scm->dev,
-				"qseecom: listener %llu will not settle, giving up\n",
-				res->data);
+				"qseecom: listener %u will not settle, failing it\n",
+				id);
+			qcom_scm_qseecom_listener_respond(id,
+					QSEECOM_LISTENER_FAILURE, res);
 			return -ELOOP;
 		}
 
-		if (res->data > U32_MAX)
-		return -EINVAL;
-
-	id = res->data;
 		listener = qcom_scm_qseecom_listener_find(id);
 		if (listener) {
 			status = listener->service(listener);
