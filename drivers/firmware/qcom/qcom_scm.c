@@ -2192,7 +2192,10 @@ static int qcom_scm_qseecom_service_listeners(struct qcom_scm_qseecom_resp *res)
 			return -ELOOP;
 		}
 
-		id = res->data;
+		if (res->data > U32_MAX)
+		return -EINVAL;
+
+	id = res->data;
 		listener = qcom_scm_qseecom_listener_find(id);
 		if (listener) {
 			status = listener->service(listener);
