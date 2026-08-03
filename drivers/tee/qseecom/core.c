@@ -430,7 +430,7 @@ static void qseecom_tee_app_forget(struct qseecom_tee *qtee, u32 app_id)
 static int qseecom_tee_app_remember(struct qseecom_tee *qtee, const char *name,
 				    u32 app_id)
 {
-	struct qseecom_tee_app *app;
+	struct qseecom_tee_app *app, *old;
 
 	app = kzalloc_obj(*app);
 	if (!app)
@@ -440,6 +440,23 @@ static int qseecom_tee_app_remember(struct qseecom_tee *qtee, const char *name,
 	strscpy(app->name, name, sizeof(app->name));
 
 	mutex_lock(&qtee->apps_lock);
+
+	/*
+	 * A name identifies one application, so an existing entry under this
+	 * name is stale -- the application it referred to is gone, whether we
+	 * unloaded it or something else did. Replace it rather than appending,
+	 * because lookups take the first match and a stale entry would
+	 * otherwise shadow the live one for good, failing every command with
+	 * an id TZ no longer knows.
+	 */
+	list_for_each_entry(old, &qtee->apps, node) {
+		if (!strcmp(old->name, name)) {
+			list_del(&old->node);
+			kfree(old);
+			break;
+		}
+	}
+
 	list_add_tail(&app->node, &qtee->apps);
 	mutex_unlock(&qtee->apps_lock);
 
