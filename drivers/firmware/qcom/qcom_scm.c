@@ -2193,8 +2193,18 @@ static int qcom_scm_qseecom_service_listeners(struct qcom_scm_qseecom_resp *res)
 			return -EPROTO;
 		}
 
-		if (res->data > U32_MAX)
-			return -EINVAL;
+		if (res->data > U32_MAX) {
+			/*
+			 * A listener id that does not fit one. There is
+			 * nothing to answer -- responding needs a valid id --
+			 * so the application stays parked and the interface is
+			 * stuck until reboot, same as the case above.
+			 */
+			dev_err(__scm->dev,
+				"qseecom: listener id %llx out of range; the interface is now stuck until reboot\n",
+				res->data);
+			return -EPROTO;
+		}
 
 		id = res->data;
 
@@ -2209,8 +2219,12 @@ static int qcom_scm_qseecom_service_listeners(struct qcom_scm_qseecom_resp *res)
 			dev_err(__scm->dev,
 				"qseecom: listener %u will not settle, failing it\n",
 				id);
-			qcom_scm_qseecom_listener_respond(id,
+			ret = qcom_scm_qseecom_listener_respond(id,
 					QSEECOM_LISTENER_FAILURE, res);
+			if (ret)
+				dev_err(__scm->dev,
+					"qseecom: could not fail listener %u (%d); the application stays parked and the interface is stuck until reboot\n",
+					id, ret);
 			return -ELOOP;
 		}
 
