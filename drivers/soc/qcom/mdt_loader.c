@@ -5,6 +5,7 @@
  * Copyright (C) 2016 Linaro Ltd
  * Copyright (C) 2015 Sony Mobile Communications Inc
  * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2026 Dawid Wróbel <me@dawidwrobel.com>
  */
 
 #include <linux/cleanup.h>
@@ -49,6 +50,20 @@ static bool mdt_header_valid(const struct firmware *fw)
 	}
 
 	return true;
+}
+
+/*
+ * Does this segment contribute bytes to the image file?
+ *
+ * A different question from mdt_phdr_loadable(), which asks whether a segment
+ * is placed into the target memory region. A hash segment is not placed there
+ * -- it is metadata, handled by qcom_mdt_read_metadata() -- but it is very much
+ * part of the file, as is anything else carrying payload. Consumers that
+ * reassemble the image rather than load it want this one.
+ */
+static bool mdt_phdr_has_payload(const struct elf32_phdr *phdr)
+{
+	return phdr->p_filesz;
 }
 
 static bool mdt_phdr_loadable(const struct elf32_phdr *phdr)
@@ -137,6 +152,146 @@ ssize_t qcom_mdt_get_size(const struct firmware *fw)
 	return min_addr < max_addr ? max_addr - min_addr : -EINVAL;
 }
 EXPORT_SYMBOL_GPL(qcom_mdt_get_size);
+
+static bool qcom_mdt_bins_are_split(const struct firmware *fw)
+{
+	const struct elf32_phdr *phdrs;
+	const struct elf32_hdr *ehdr;
+	uint64_t seg_start, seg_end;
+	int i;
+
+	ehdr = (struct elf32_hdr *)fw->data;
+	phdrs = (struct elf32_phdr *)(fw->data + ehdr->e_phoff);
+
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		/*
+		 * The size of the MDT file is not padded to include any
+		 * zero-sized segments at the end. Ignore these, as they should
+		 * not affect the decision about image being split or not.
+		 */
+		if (!phdrs[i].p_filesz)
+			continue;
+
+		seg_start = phdrs[i].p_offset;
+		seg_end = phdrs[i].p_offset + phdrs[i].p_filesz;
+		if (seg_start > fw->size || seg_end > fw->size)
+			return true;
+	}
+
+	return false;
+}
+
+/**
+ * qcom_mdt_get_image_size() - size of the image as one contiguous blob
+ * @fw:		firmware object for the mdt file
+ *
+ * Some Qualcomm firmware loaders -- QSEECOM's application loader among them --
+ * take the whole image as a single buffer, the mdt followed by the segment
+ * payloads, rather than having the segments placed at their physical
+ * addresses. This returns the size such a buffer needs.
+ *
+ * Deliberately not qcom_mdt_get_size(), which reports the span from the lowest
+ * to the highest p_paddr: that is the memory region a remoteproc needs, and it
+ * bears no relation to how much file there is.
+ *
+ * Return: size in bytes, or negative errno on failure.
+ */
+ssize_t qcom_mdt_get_image_size(const struct firmware *fw)
+{
+	const struct elf32_phdr *phdrs;
+	const struct elf32_hdr *ehdr;
+	size_t size;
+	int i;
+
+	if (!mdt_header_valid(fw))
+		return -EINVAL;
+
+	/* A single-file image already is the blob. */
+	if (!qcom_mdt_bins_are_split(fw))
+		return fw->size;
+
+	ehdr = (struct elf32_hdr *)fw->data;
+	phdrs = (struct elf32_phdr *)(fw->data + ehdr->e_phoff);
+
+	size = fw->size;
+
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		if (!mdt_phdr_has_payload(&phdrs[i]))
+			continue;
+
+		if (size + phdrs[i].p_filesz < size)
+			return -EINVAL;
+
+		size += phdrs[i].p_filesz;
+	}
+
+	return size;
+}
+EXPORT_SYMBOL_GPL(qcom_mdt_get_image_size);
+
+/**
+ * qcom_mdt_read_image() - assemble the image as one contiguous blob
+ * @dev:	device handle to associate resources with
+ * @fw:		firmware object for the mdt file
+ * @fw_name:	name of the firmware, for construction of segment file names
+ * @mem:	buffer to assemble into
+ * @mem_size:	size of @mem, at least qcom_mdt_get_image_size()
+ *
+ * Copies the mdt and then every segment that has one, in program-header order,
+ * one after another. This is the layout QSEECOM's application loader expects,
+ * and it is not the layout qcom_mdt_load() produces -- that one places
+ * segments at their p_paddr, which for some images is not a usable file layout
+ * at all: a segment may declare p_offset 0, overlapping the headers, and two
+ * segments may declare the same p_offset.
+ *
+ * Selected by mdt_phdr_has_payload() rather than mdt_phdr_loadable(): this is
+ * not a loading operation, so the question is which segments are part of the
+ * file, not which are placed in memory. The hash in particular is skipped by
+ * the latter but belongs here -- the secure world is handed the image whole and
+ * authenticates it whole, so dropping a segment shifts everything after it and
+ * the image is rejected.
+ *
+ * Return: number of bytes assembled, or negative errno on failure.
+ */
+ssize_t qcom_mdt_read_image(struct device *dev, const struct firmware *fw,
+			    const char *fw_name, void *mem, size_t mem_size)
+{
+	const struct elf32_phdr *phdrs;
+	const struct elf32_hdr *ehdr;
+	size_t off;
+	ssize_t ret;
+	int i;
+
+	ret = qcom_mdt_get_image_size(fw);
+	if (ret < 0)
+		return ret;
+
+	if (mem_size < (size_t)ret)
+		return -ENOSPC;
+
+	memcpy(mem, fw->data, fw->size);
+
+	if (!qcom_mdt_bins_are_split(fw))
+		return fw->size;
+
+	ehdr = (struct elf32_hdr *)fw->data;
+	phdrs = (struct elf32_phdr *)(fw->data + ehdr->e_phoff);
+	off = fw->size;
+
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		if (!mdt_phdr_has_payload(&phdrs[i]))
+			continue;
+
+		ret = mdt_load_split_segment(mem + off, phdrs, i, fw_name, dev);
+		if (ret)
+			return ret;
+
+		off += phdrs[i].p_filesz;
+	}
+
+	return off;
+}
+EXPORT_SYMBOL_GPL(qcom_mdt_read_image);
 
 /**
  * qcom_mdt_read_metadata() - read header and metadata from mdt or mbn
@@ -290,34 +445,6 @@ static int __qcom_mdt_pas_init(struct device *dev, const struct firmware *fw,
 
 out:
 	return ret;
-}
-
-static bool qcom_mdt_bins_are_split(const struct firmware *fw)
-{
-	const struct elf32_phdr *phdrs;
-	const struct elf32_hdr *ehdr;
-	uint64_t seg_start, seg_end;
-	int i;
-
-	ehdr = (struct elf32_hdr *)fw->data;
-	phdrs = (struct elf32_phdr *)(fw->data + ehdr->e_phoff);
-
-	for (i = 0; i < ehdr->e_phnum; i++) {
-		/*
-		 * The size of the MDT file is not padded to include any
-		 * zero-sized segments at the end. Ignore these, as they should
-		 * not affect the decision about image being split or not.
-		 */
-		if (!phdrs[i].p_filesz)
-			continue;
-
-		seg_start = phdrs[i].p_offset;
-		seg_end = phdrs[i].p_offset + phdrs[i].p_filesz;
-		if (seg_start > fw->size || seg_end > fw->size)
-			return true;
-	}
-
-	return false;
 }
 
 /**
