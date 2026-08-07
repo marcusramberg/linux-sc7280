@@ -45,6 +45,30 @@ QSEECOM-era applications shipped in a platform's firmware reachable at all, and
 on many devices those remain the only implementation of the functions they
 provide.
 
+Why not extend the QTEE driver
+------------------------------
+
+Because the two are different ABIs, and the TEE subsystem carries one backend
+per ABI: ``amdtee``, ``optee``, ``qcomtee``, ``qseecom`` and ``tstee``, each
+with its own ``TEE_IMPL_ID_*``.
+
+The difference is not cosmetic. QTEE reaches the secure world through two SCM
+calls, ``qcom_scm_qtee_invoke_smc()`` and ``qcom_scm_qtee_callback_response()``,
+and models everything as objects; its device advertises
+``TEE_GEN_CAP_OBJREF``. QSEECOM has six distinct operations -- register and
+unregister a listener, look up, load, shut down and send to an application --
+addressed to different secure-world owners and services, and models a session as
+a named application taking command buffers. It advertises no OBJREF capability
+because it has no objects. A ``tee_device`` reports one ``impl_id`` and one set
+of capabilities, so the two cannot share one.
+
+What they do share is the SCM plumbing, and that is already shared: both sets of
+helpers live in ``drivers/firmware/qcom/qcom_scm.c``.
+
+The two also coexist. A device supporting both exposes ``/dev/tee0`` from this
+driver and ``/dev/tee1`` from QTEE, which is only possible as separate
+``tee_device`` instances. A client picks by ``impl_id``.
+
 Devices
 =======
 
@@ -129,12 +153,28 @@ two segments declaring the same ``p_offset`` with different sizes.
 
 QSEE keeps the name it was loaded under, which is what a later lookup matches.
 
-Closing the load session unloads the application. This matters because QSEE
-refuses to load an application that is already loaded, and because an
-application typically asks the normal world for its stored state only during a
-first initialisation -- so without unloading, re-initialising one would require
-a reboot. Sessions on the client device only reference an application; they do
-not own it.
+Application lifetime
+--------------------
+
+Nothing owns a loaded application. The driver's registry entry is
+reference-counted: resolving an application by name takes a reference, every
+session holds one, and the last one released unloads it. There is no explicit
+unload, and no session that is special.
+
+This follows amdtee, which reference-counts a TA by handle and unloads it when
+the count reaches zero, and the reason to copy it is failure behaviour. QSEE
+refuses to load an application that is already resident, and only a reboot
+clears one. If a session owned its application, every client that crashed
+between load and close would strand it. A reference dropped by the teardown path
+cannot be skipped, so a killed process gives its reference back like any other.
+
+That matters because an application typically asks the normal world for its
+stored state only during a first initialisation. Re-initialising one means
+dropping every reference to it and loading again, which is not possible if a
+crash can leave a reference permanently held.
+
+Applications the boot chain loaded are not owned by this driver and are never
+unloaded by it.
 
 Listener services
 =================
@@ -157,12 +197,14 @@ it, because loading an application opens the same device.
 ``TEE_IOC_SUPPL_RECV`` returns two parameters: a VALUE_INPUT whose first
 element identifies the request, and a MEMREF_INOUT naming the listener buffer
 to look at. The identifier is an INPUT because the direction is the
-supplicant's: the kernel is handing it a value, exactly as OP-TEE does. ``TEE_IOC_SUPPL_SEND`` takes that identifier back as a VALUE_OUTPUT
-in its first parameter. The change of attribute is not a typo: parameter
+supplicant's: the kernel is handing it a value, exactly as OP-TEE does.
+``TEE_IOC_SUPPL_SEND`` takes that identifier back as a VALUE_OUTPUT in its
+first parameter. The change of attribute is not a typo: parameter
 directions on this interface are named from the supplicant's point of view, and
 the core only transfers a value that is marked INPUT on the way out to the
-supplicant and OUTPUT on the way back in. A supplicant that overran the timeout returns to find
-its request abandoned and possibly a new one in the slot; echoing the
+supplicant and OUTPUT on the way back in. A supplicant that overran the timeout
+returns to find its request abandoned and possibly a new one in the slot;
+echoing the
 identifier is what lets an answer to the old request be rejected with
 ``-ESTALE`` instead of being applied to the new one.
 
@@ -199,11 +241,11 @@ registered the listener.
 Known limitations
 =================
 
-An application this driver loaded is unloaded when its load session closes. If
-that unload fails, the application stays resident and the driver keeps its
-registry entry, so it can still be reached -- but a module unload at that point
-frees the registry, and nothing afterwards can name or unload it short of a
-reboot. TZ has no enumerate command that would let a later probe recover it.
+If the shutdown call fails when an application's last reference goes, the
+application stays resident and the driver keeps its registry entry, so it can
+still be reached -- but a module unload at that point frees the registry, and
+nothing afterwards can name or unload it short of a reboot. QSEE has no
+enumerate command that would let a later probe recover it.
 
 Security considerations
 =======================
@@ -214,18 +256,22 @@ know any application's payload format. Anyone able to open the client device
 and open a session can therefore send arbitrary commands to any loaded trusted
 application.
 
-That surface is well travelled. Trusted applications have carried memory-safety
-bugs in their command handlers reachable exactly this way (CVE-2022-48334), and
-the consequences are not confined to the secure world: a trusted application is
-trusted by the hardware in ways the kernel is not, so the communication path has
-been used to obtain arbitrary kernel read/write (CVE-2021-1961). Qualcomm's own
-qseecom driver, as shipped in Android kernels, has had its share too, including
-a use-after-free and a race (CVE-2019-14040, CVE-2019-14041), so this is not a
-quiet corner.
+That surface is well travelled on Android, which ships the same interface. The
+bug can be in a trusted application's own command handler: CVE-2022-48334 is an
+integer overflow in ``drm_verify_keys`` and a resulting buffer overflow inside
+the Widevine trusted application, reachable by whoever can send it commands.
+CVE-2021-1961 is a buffer overflow from an unchecked offset length while
+updating a buffer value. The listener path this driver implements has its own
+history: CVE-2019-14041 is a buffer overrun while processing a listener's
+modified response, because the size is not checked when writing physical
+address information into the message buffer, and CVE-2019-14040 is a
+use-after-free inside QSEE itself.
 
-Access to the device nodes is therefore part of the security boundary rather
-than a packaging detail -- reaching the old character device from an
-unprivileged context was itself an escalation step (CVE-2018-9411).
+The consequences are not confined to the secure world: a trusted application is
+trusted by the hardware in ways the kernel is not, so compromising one is a
+route back into the kernel rather than a secure-world-only problem. Access to
+the device nodes is therefore part of the security boundary rather than a
+packaging detail.
 
 The privileged device requires ``CAP_SYS_ADMIN`` to open. It loads code into
 the secure world and registers the services trusted applications call back
