@@ -242,25 +242,16 @@
 	fingerprint {
 		compatible = "focaltech,ft9362";
 		interrupts-extended = <&tlmm 34 IRQ_TYPE_EDGE_RISING>;
-		/*
-		 * "default" is applied by the pinctrl core before the driver
-		 * probes, and is the experiment: mux the sensor's SPI pads to
-		 * the QUP so the secure world's controller reaches the part.
-		 * The driver never selects this one; it only looks up the
-		 * five it drives by name.
-		 */
-		pinctrl-names = "default",
-				"fpsensor_finger_rst_low",
+		pinctrl-names = "fpsensor_finger_rst_low",
 				"fpsensor_finger_rst_high",
 				"fpsensor_eint_as_int",
 				"fpsensor_finger_power_low",
 				"fpsensor_finger_power_high";
-		pinctrl-0 = <&qup_spi14_data_clk>, <&qup_spi14_cs>;
-		pinctrl-1 = <&fpsensor_rst_low>;
-		pinctrl-2 = <&fpsensor_rst_high>;
-		pinctrl-3 = <&fpsensor_irq>;
-		pinctrl-4 = <&fpsensor_pwr_low>;
-		pinctrl-5 = <&fpsensor_pwr_high>;
+		pinctrl-0 = <&fpsensor_rst_low>;
+		pinctrl-1 = <&fpsensor_rst_high>;
+		pinctrl-2 = <&fpsensor_irq>;
+		pinctrl-3 = <&fpsensor_pwr_low>;
+		pinctrl-4 = <&fpsensor_pwr_high>;
 	};
 
 	reserved-memory {
@@ -1548,15 +1539,9 @@
 &tlmm {
 	/*
 	 * 32-33: SMB1394 (SPMI)
-	 *
-	 * 56-59 are the fingerprint sensor's SPI. They are left out of this
-	 * list deliberately: the bus belongs to the secure world, but the pads
-	 * read back as plain GPIO with a pull-down, and the trusted
-	 * application's chip probe reads all zeroes off them. Letting Linux
-	 * mux them to the QUP is how we find out whether anything muxes them
-	 * at all -- see the fingerprint node's default pinctrl state.
+	 * 56-59: fingerprint reader (SPI)
 	 */
-	gpio-reserved-ranges = <32 2>;
+	gpio-reserved-ranges = <32 2>, <56 4>;
 
 	fpsensor_irq: fpsensor-irq-state {
 		pins = "gpio34";
