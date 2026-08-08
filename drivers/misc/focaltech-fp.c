@@ -241,7 +241,7 @@ static void focalfp_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id focalfp_of_match[] = {
-	{ .compatible = "focaltech,fp" },
+	{ .compatible = "focaltech,ft9362" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, focalfp_of_match);
