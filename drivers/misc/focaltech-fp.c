@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * FocalTech FT9362 fingerprint sensor driver — GPIO/IRQ management only.
+ * FocalTech fingerprint sensor driver — GPIO/IRQ management only.
  * TA interaction (capture, match) is handled from userspace via /dev/tee0.
+ *
+ * The sensor hangs off an SPI instance owned by TrustZone, so this driver
+ * never touches the bus. Its whole job is power, reset, and turning the
+ * sensor's interrupt line into events userspace can wait on.
+ *
+ * Event delivery follows the vendor HAL's shape: arm the line with
+ * FF_IOC_ENABLE_IRQ, then poll() for EPOLLIN and read() the event. The
+ * interrupt stays armed across events, so an edge arriving while userspace is
+ * away is counted rather than lost.
  */
 
 #include <linux/delay.h>
@@ -14,10 +23,13 @@
 #include <linux/pm_wakeup.h>
 #include <linux/compat.h>
 #include <linux/irq.h>
+#include <linux/poll.h>
+#include <linux/uaccess.h>
 
-#define FF_IOC_ENABLE_IRQ   _IO('f', 0x05)
-#define FF_IOC_DISABLE_IRQ  _IO('f', 0x06)
-#define FF_IOC_RESET_DEVICE _IO('f', 0x02)
+#define FF_IOC_RESET_DEVICE   _IO('f', 0x02)
+#define FF_IOC_ENABLE_IRQ     _IO('f', 0x05)
+#define FF_IOC_DISABLE_IRQ    _IO('f', 0x06)
+#define FF_IOC_GET_EVENT_INFO _IOR('f', 0x13, __u32)
 
 struct focalfp_dev {
 	struct miscdevice miscdev;
@@ -29,26 +41,47 @@ struct focalfp_dev {
 	struct pinctrl_state *st_pwr_high;
 	int irq;
 	bool irq_enabled;
-	atomic_t irq_fired;
+	/* Edges seen but not yet read, and a monotonic count of all of them. */
+	u32 pending;
+	u32 seq;
+	bool awake;
 	wait_queue_head_t irq_wq;
 	struct wakeup_source *ws;
 	spinlock_t irq_lock;
 };
 
+/*
+ * Hard IRQ context: there is no hardware to service here, only a counter to
+ * bump, so a threaded handler would add latency without buying anything. The
+ * line is left armed — masking it here is what used to drop every edge that
+ * arrived between the handler and userspace re-arming.
+ */
 static irqreturn_t focalfp_irq_handler(int irq, void *data)
 {
 	struct focalfp_dev *fp = data;
 
 	spin_lock(&fp->irq_lock);
 	if (fp->irq_enabled) {
-		disable_irq_nosync(fp->irq);
-		fp->irq_enabled = false;
-		__pm_stay_awake(fp->ws);
-		atomic_set(&fp->irq_fired, 1);
+		fp->pending++;
+		fp->seq++;
+		if (!fp->awake) {
+			__pm_stay_awake(fp->ws);
+			fp->awake = true;
+		}
 		wake_up_interruptible(&fp->irq_wq);
 	}
 	spin_unlock(&fp->irq_lock);
+
 	return IRQ_HANDLED;
+}
+
+/* Drop the wakeup source once nothing is left for userspace to collect. */
+static void focalfp_relax_locked(struct focalfp_dev *fp)
+{
+	if (fp->awake) {
+		__pm_relax(fp->ws);
+		fp->awake = false;
+	}
 }
 
 static int focalfp_do_reset(struct focalfp_dev *fp)
@@ -66,38 +99,133 @@ static int focalfp_do_reset(struct focalfp_dev *fp)
 	return 0;
 }
 
+static void focalfp_arm(struct focalfp_dev *fp)
+{
+	unsigned long flags;
+	bool enable = false;
+
+	spin_lock_irqsave(&fp->irq_lock, flags);
+	if (!fp->irq_enabled) {
+		fp->irq_enabled = true;
+		enable = true;
+	}
+	spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+	if (!enable)
+		return;
+
+	/*
+	 * An edge latched while the line was masked — during power-on, reset,
+	 * or any period userspace left it disarmed — is delivered the instant
+	 * enable_irq() runs, and would surface as a phantom finger event.
+	 */
+	irq_set_irqchip_state(fp->irq, IRQCHIP_STATE_PENDING, false);
+	enable_irq(fp->irq);
+}
+
+static void focalfp_disarm(struct focalfp_dev *fp)
+{
+	unsigned long flags;
+	bool disable = false;
+
+	spin_lock_irqsave(&fp->irq_lock, flags);
+	if (fp->irq_enabled) {
+		fp->irq_enabled = false;
+		disable = true;
+	}
+	fp->pending = 0;
+	focalfp_relax_locked(fp);
+	spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+	if (disable)
+		disable_irq(fp->irq);
+
+	wake_up_interruptible(&fp->irq_wq);
+}
+
+static ssize_t focalfp_read(struct file *file, char __user *buf, size_t count,
+                            loff_t *ppos)
+{
+	struct focalfp_dev *fp = container_of(file->private_data,
+	                                      struct focalfp_dev, miscdev);
+	unsigned long flags;
+	u32 seq;
+	int ret;
+
+	if (count < sizeof(u32))
+		return -EINVAL;
+
+	spin_lock_irqsave(&fp->irq_lock, flags);
+	while (!fp->pending) {
+		spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+
+		ret = wait_event_interruptible(fp->irq_wq, fp->pending);
+		if (ret)
+			return ret;
+
+		spin_lock_irqsave(&fp->irq_lock, flags);
+	}
+
+	/*
+	 * Report the sequence number rather than the backlog: userspace cares
+	 * that the sensor fired and re-reads its state from the TA anyway, and
+	 * a gap in the sequence tells it edges were coalesced.
+	 */
+	seq = fp->seq;
+	fp->pending = 0;
+	focalfp_relax_locked(fp);
+	spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+	if (copy_to_user(buf, &seq, sizeof(seq)))
+		return -EFAULT;
+
+	return sizeof(seq);
+}
+
+static __poll_t focalfp_poll(struct file *file, struct poll_table_struct *wait)
+{
+	struct focalfp_dev *fp = container_of(file->private_data,
+	                                      struct focalfp_dev, miscdev);
+	unsigned long flags;
+	__poll_t mask = 0;
+
+	poll_wait(file, &fp->irq_wq, wait);
+
+	spin_lock_irqsave(&fp->irq_lock, flags);
+	if (fp->pending)
+		mask |= EPOLLIN | EPOLLRDNORM;
+	spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+	return mask;
+}
+
 static long focalfp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct focalfp_dev *fp = container_of(file->private_data,
 	                                      struct focalfp_dev, miscdev);
+	unsigned long flags;
+	u32 pending;
 	int ret = 0;
 
 	switch (cmd) {
 	case FF_IOC_ENABLE_IRQ:
-		spin_lock_irq(&fp->irq_lock);
-		atomic_set(&fp->irq_fired, 0);
-		if (!fp->irq_enabled) {
-			fp->irq_enabled = true;
-			enable_irq(fp->irq);
-		}
-		spin_unlock_irq(&fp->irq_lock);
-
-		ret = wait_event_interruptible(fp->irq_wq,
-		                               atomic_read(&fp->irq_fired));
-		if (ret == 0)
-			__pm_relax(fp->ws);
+		focalfp_arm(fp);
 		break;
 
 	case FF_IOC_DISABLE_IRQ:
-		spin_lock_irq(&fp->irq_lock);
-		if (fp->irq_enabled) {
-			disable_irq_nosync(fp->irq);
-			fp->irq_enabled = false;
-		}
-		atomic_set(&fp->irq_fired, 1);
-		wake_up_interruptible(&fp->irq_wq);
-		spin_unlock_irq(&fp->irq_lock);
-		__pm_relax(fp->ws);
+		focalfp_disarm(fp);
+		break;
+
+	case FF_IOC_GET_EVENT_INFO:
+		spin_lock_irqsave(&fp->irq_lock, flags);
+		pending = fp->pending;
+		spin_unlock_irqrestore(&fp->irq_lock, flags);
+
+		if (copy_to_user((void __user *)arg, &pending, sizeof(pending)))
+			ret = -EFAULT;
 		break;
 
 	case FF_IOC_RESET_DEVICE:
@@ -114,13 +242,16 @@ static int focalfp_release(struct inode *inode, struct file *file)
 {
 	struct focalfp_dev *fp = container_of(file->private_data,
 	                                      struct focalfp_dev, miscdev);
-	/* Release wakeup source if process exits while blocked in ENABLE_IRQ */
-	__pm_relax(fp->ws);
+
+	/* Nothing is left to collect the events, so stop holding the system up. */
+	focalfp_disarm(fp);
 	return 0;
 }
 
 static const struct file_operations focalfp_fops = {
 	.owner          = THIS_MODULE,
+	.read           = focalfp_read,
+	.poll           = focalfp_poll,
 	.unlocked_ioctl = focalfp_ioctl,
 	.compat_ioctl   = compat_ptr_ioctl,
 	.release        = focalfp_release,
@@ -137,7 +268,6 @@ static int focalfp_probe(struct platform_device *pdev)
 
 	init_waitqueue_head(&fp->irq_wq);
 	spin_lock_init(&fp->irq_lock);
-	atomic_set(&fp->irq_fired, 0);
 
 	fp->ws = wakeup_source_register(&pdev->dev, "focaltech_fp");
 	if (!fp->ws)
@@ -202,8 +332,7 @@ static int focalfp_probe(struct platform_device *pdev)
 		goto err_pwr;
 	}
 
-	/* Clear any edge the GIC latched during sensor power-on/reset */
-	irq_set_irqchip_state(fp->irq, IRQCHIP_STATE_PENDING, false);
+	/* Armed on demand; focalfp_arm() clears whatever reset latched. */
 	fp->irq_enabled = false;
 
 	fp->miscdev.minor  = MISC_DYNAMIC_MINOR;
@@ -218,7 +347,7 @@ static int focalfp_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, fp);
-	dev_info(&pdev->dev, "FocalTech FT9362 fingerprint driver loaded\n");
+	dev_info(&pdev->dev, "FocalTech fingerprint driver loaded\n");
 	return 0;
 
 err_pwr:
@@ -257,5 +386,5 @@ static struct platform_driver focalfp_driver = {
 module_platform_driver(focalfp_driver);
 
 MODULE_AUTHOR("Marcus Ramberg <marcus.ramberg@gmail.com>");
-MODULE_DESCRIPTION("FocalTech FT9362 fingerprint sensor GPIO/IRQ driver");
+MODULE_DESCRIPTION("FocalTech fingerprint sensor GPIO/IRQ driver");
 MODULE_LICENSE("GPL");
