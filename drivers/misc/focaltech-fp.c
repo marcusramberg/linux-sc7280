@@ -33,6 +33,7 @@
 
 struct focalfp_dev {
 	struct miscdevice miscdev;
+	const char *firmware_name;
 	struct pinctrl *pinctrl;
 	struct pinctrl_state *st_rst_low;
 	struct pinctrl_state *st_rst_high;
@@ -257,6 +258,30 @@ static const struct file_operations focalfp_fops = {
 	.release        = focalfp_release,
 };
 
+/*
+ * The trusted application that drives this sensor. The normal world never
+ * touches the bus -- every capture and match happens inside that application
+ * -- so a client has to know its name to open a session, and the name belongs
+ * to the board rather than to the client.
+ */
+static ssize_t firmware_name_show(struct device *dev,
+                                  struct device_attribute *attr, char *buf)
+{
+	struct focalfp_dev *fp = dev_get_drvdata(dev);
+
+	if (!fp->firmware_name)
+		return -ENODATA;
+
+	return sysfs_emit(buf, "%s\n", fp->firmware_name);
+}
+static DEVICE_ATTR_RO(firmware_name);
+
+static struct attribute *focalfp_attrs[] = {
+	&dev_attr_firmware_name.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(focalfp);
+
 static int focalfp_probe(struct platform_device *pdev)
 {
 	struct focalfp_dev *fp;
@@ -268,6 +293,14 @@ static int focalfp_probe(struct platform_device *pdev)
 
 	init_waitqueue_head(&fp->irq_wq);
 	spin_lock_init(&fp->irq_lock);
+
+	/*
+	 * Optional: a board that does not name its application leaves the
+	 * attribute empty rather than failing to probe, since the interrupt and
+	 * power handling this driver provides are useful either way.
+	 */
+	of_property_read_string(pdev->dev.of_node, "firmware-name",
+	                        &fp->firmware_name);
 
 	fp->ws = wakeup_source_register(&pdev->dev, "focaltech_fp");
 	if (!fp->ws)
@@ -335,6 +368,10 @@ static int focalfp_probe(struct platform_device *pdev)
 	/* Armed on demand; focalfp_arm() clears whatever reset latched. */
 	fp->irq_enabled = false;
 
+	/* Before misc_register(), so the attribute is readable as soon as the
+	 * node appears. */
+	platform_set_drvdata(pdev, fp);
+
 	fp->miscdev.minor  = MISC_DYNAMIC_MINOR;
 	fp->miscdev.name   = "focaltech_fp";
 	fp->miscdev.fops   = &focalfp_fops;
@@ -346,7 +383,6 @@ static int focalfp_probe(struct platform_device *pdev)
 		goto err_pwr;
 	}
 
-	platform_set_drvdata(pdev, fp);
 	dev_info(&pdev->dev, "FocalTech fingerprint driver loaded\n");
 	return 0;
 
@@ -381,6 +417,7 @@ static struct platform_driver focalfp_driver = {
 	.driver = {
 		.name           = "focaltech-fp",
 		.of_match_table = focalfp_of_match,
+		.dev_groups     = focalfp_groups,
 	},
 };
 module_platform_driver(focalfp_driver);

@@ -242,6 +242,14 @@
 	fingerprint {
 		compatible = "focaltech,ft9362";
 		interrupts-extended = <&tlmm 34 IRQ_TYPE_EDGE_RISING>;
+
+		/*
+		 * The trusted application that owns the sensor. The SPI
+		 * instance belongs to TrustZone, so every capture and match
+		 * happens inside this application and a client has to name it
+		 * to open a session.
+		 */
+		firmware-name = "focal32";
 		pinctrl-names = "fpsensor_finger_rst_low",
 				"fpsensor_finger_rst_high",
 				"fpsensor_eint_as_int",
