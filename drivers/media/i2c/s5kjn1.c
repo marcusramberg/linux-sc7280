@@ -18,6 +18,10 @@
 #define S5KJN1_MCLK_FREQ_24MHZ		(24 * HZ_PER_MHZ)
 #define S5KJN1_DATA_LANES		4
 
+/* Full pixel array (native resolution, before binning). */
+#define S5KJN1_NATIVE_WIDTH		8160
+#define S5KJN1_NATIVE_HEIGHT		6144
+
 /* Register map is similar to MIPI CCS compliant camera sensors */
 #define S5KJN1_REG_CHIP_ID		CCI_REG16(0x0000)
 #define S5KJN1_CHIP_ID			0x38e1
@@ -1068,24 +1072,26 @@ static int s5kjn1_get_selection(struct v4l2_subdev *sd,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
-	struct s5kjn1 *s5kjn1 = to_s5kjn1(sd);
-
 	if (sel->which != V4L2_SUBDEV_FORMAT_ACTIVE)
 		return -EINVAL;
 
 	switch (sel->target) {
+	/*
+	 * All modes read out the full field of view (binning modes bin the
+	 * whole array), so the crop rectangle always covers the native array.
+	 */
 	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.left = 0;
 		sel->r.top = 0;
-		sel->r.width = s5kjn1->mode->width;
-		sel->r.height = s5kjn1->mode->width;
+		sel->r.width = S5KJN1_NATIVE_WIDTH;
+		sel->r.height = S5KJN1_NATIVE_HEIGHT;
 		return 0;
 	default:
 		return -EINVAL;
 	}
-
-	return 0;
 }
 
 static int s5kjn1_init_state(struct v4l2_subdev *sd,

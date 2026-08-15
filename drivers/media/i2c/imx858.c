@@ -1009,6 +1009,30 @@ done_endpoint_free:
 	return ret;
 }
 
+static int imx858_get_selection(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *sd_state,
+				struct v4l2_subdev_selection *sel)
+{
+	struct imx858 *imx858 = to_imx858(sd);
+
+	if (sel->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+		return -EINVAL;
+
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = imx858->cur_mode->width;
+		sel->r.height = imx858->cur_mode->height;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 /* V4l2 subdevice ops */
 static const struct v4l2_subdev_video_ops imx858_video_ops = {
 	.s_stream = imx858_set_stream,
@@ -1019,6 +1043,7 @@ static const struct v4l2_subdev_pad_ops imx858_pad_ops = {
 	.enum_frame_size = imx858_enum_frame_size,
 	.get_fmt = imx858_get_pad_format,
 	.set_fmt = imx858_set_pad_format,
+	.get_selection = imx858_get_selection,
 };
 
 static const struct v4l2_subdev_ops imx858_subdev_ops = {
