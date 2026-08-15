@@ -1074,20 +1074,23 @@ static int imx858_power_on(struct device *dev)
 		return ret;
 	}
 
-	gpiod_set_value_cansleep(imx858->reset_gpio, 0);
-
 	ret = clk_prepare_enable(imx858->inclk);
 	if (ret) {
 		dev_err(imx858->dev, "fail to enable inclk\n");
-		goto error_reset;
+		goto error_regulator;
 	}
 
+	/* Let the input clock (MCLK) settle before releasing reset (XCLR). */
 	usleep_range(1000, 1200);
+
+	gpiod_set_value_cansleep(imx858->reset_gpio, 0);
+
+	/* Wait for the sensor to boot before the first i2c access. */
+	usleep_range(10000, 15000);
 
 	return 0;
 
-error_reset:
-	gpiod_set_value_cansleep(imx858->reset_gpio, 1);
+error_regulator:
 	regulator_bulk_disable(ARRAY_SIZE(imx858_supply_names),
 			       imx858->supplies);
 
