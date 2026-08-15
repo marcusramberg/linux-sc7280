@@ -1403,8 +1403,14 @@ void ucsi_connector_change(struct ucsi *ucsi, u8 num)
 
 	con = &ucsi->connector[num - 1];
 
+	/*
+	 * Handling the change ends up in ->connector_status(), which on boards
+	 * with an off-SoC orientation switch or redriver talks to it over a bus
+	 * that may itself be suspended. Use a freezable queue so that the work
+	 * is not run until the devices are back.
+	 */
 	if (!test_and_set_bit(EVENT_PENDING, &ucsi->flags))
-		schedule_work(&con->work);
+		queue_work(system_freezable_wq, &con->work);
 }
 EXPORT_SYMBOL_GPL(ucsi_connector_change);
 
