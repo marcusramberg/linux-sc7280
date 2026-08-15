@@ -60,6 +60,17 @@ config NFC_VIRTUAL_NCI
 
 	  If unsure, say N.
 
+config NFC_ST21NFC_NCI
+	tristate "STMicroelectronics ST21NFCD NCI/I2C support"
+	depends on NFC_NCI && I2C
+	help
+	  This adds support for the STMicroelectronics ST21NFCD NFC controller
+	  as used on the Fairphone 5, driven as a plain NCI controller over
+	  I2C (no NDLC link layer).
+
+	  To compile this driver as a module, choose m here. The module will
+	  be called st21nfc-nci.
+
 source "drivers/nfc/fdp/Kconfig"
 source "drivers/nfc/pn544/Kconfig"
 source "drivers/nfc/pn533/Kconfig"
