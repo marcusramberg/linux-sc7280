@@ -2305,6 +2305,8 @@ struct qmp_combo {
 	struct phy_configure_opts_dp dp_opts;
 	unsigned int dp_init_count;
 	bool dp_powered_on;
+	bool mode_switch_pending;
+	enum qmpphy_mode pending_mode;
 
 	struct clk_fixed_rate pipe_clk_fixed;
 	struct clk_hw dp_link_hw;
@@ -3838,6 +3840,8 @@ static int qmp_combo_dp_power_on(struct phy *phy)
 	return 0;
 }
 
+static void qmp_combo_apply_mode(struct qmp_combo *qmp, enum qmpphy_mode new_mode);
+
 static int qmp_combo_dp_power_off(struct phy *phy)
 {
 	struct qmp_combo *qmp = phy_get_drvdata(phy);
@@ -3848,6 +3852,14 @@ static int qmp_combo_dp_power_off(struct phy *phy)
 	writel(DP_PHY_PD_CTL_PSR_PWRDN, qmp->dp_dp_phy + QSERDES_DP_PHY_PD_CTL);
 
 	qmp->dp_powered_on = false;
+
+	/*
+	 * A mode switch requested while the DP PHY was still powered on was
+	 * deferred rather than applied. The DP PHY is now down, so it is safe
+	 * to reprogram the combo PHY; nothing else would ever retry it.
+	 */
+	if (qmp->mode_switch_pending)
+		qmp_combo_apply_mode(qmp, qmp->pending_mode);
 
 	mutex_unlock(&qmp->phy_mutex);
 
@@ -3936,6 +3948,48 @@ static int qmp_combo_usb_power_off(struct phy *phy)
 			SW_PWRDN);
 
 	return 0;
+}
+
+/* Reprogram the combo PHY for @new_mode. Caller must hold qmp->phy_mutex. */
+static void qmp_combo_apply_mode(struct qmp_combo *qmp, enum qmpphy_mode new_mode)
+{
+	const struct qmp_phy_cfg *cfg = qmp->cfg;
+
+	dev_dbg(qmp->dev, "switching from qmpphy mode %d to %d\n",
+		qmp->qmpphy_mode, new_mode);
+
+	qmp->qmpphy_mode = new_mode;
+	qmp->mode_switch_pending = false;
+
+	if (!qmp->init_count)
+		return;
+
+	if (qmp->usb_init_count)
+		qmp_combo_usb_power_off(qmp->usb_phy);
+
+	if (qmp->dp_init_count)
+		writel(DP_PHY_PD_CTL_PSR_PWRDN, qmp->dp_dp_phy + QSERDES_DP_PHY_PD_CTL);
+
+	qmp_combo_com_exit(qmp, true);
+
+	/* Now everything's powered down, power up the right PHYs */
+	qmp_combo_com_init(qmp, true);
+
+	if (new_mode == QMPPHY_MODE_DP_ONLY) {
+		if (qmp->usb_init_count)
+			qmp->usb_init_count--;
+	}
+
+	if (new_mode == QMPPHY_MODE_USB3DP || new_mode == QMPPHY_MODE_USB3_ONLY) {
+		qmp_combo_usb_power_on(qmp->usb_phy);
+		if (!qmp->usb_init_count)
+			qmp->usb_init_count++;
+	}
+
+	if (new_mode == QMPPHY_MODE_DP_ONLY || new_mode == QMPPHY_MODE_USB3DP) {
+		if (qmp->dp_init_count)
+			cfg->dp_aux_init(qmp);
+	}
 }
 
 static int qmp_combo_usb_init(struct phy *phy)
@@ -4452,7 +4506,6 @@ static int qmp_combo_typec_switch_set(struct typec_switch_dev *sw,
 static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *state)
 {
 	struct qmp_combo *qmp = typec_mux_get_drvdata(mux);
-	const struct qmp_phy_cfg *cfg = qmp->cfg;
 	enum qmpphy_mode new_mode;
 	unsigned int svid;
 
@@ -4487,47 +4540,19 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 
 	if (new_mode == qmp->qmpphy_mode) {
 		dev_dbg(qmp->dev, "typec_mux_set: same qmpphy mode, bail out\n");
+		qmp->mode_switch_pending = false;
 		return 0;
 	}
 
 	if (qmp->qmpphy_mode != QMPPHY_MODE_USB3_ONLY && qmp->dp_powered_on) {
-		dev_dbg(qmp->dev, "typec_mux_set: DP PHY is still in use, delaying switch\n");
+		dev_dbg(qmp->dev, "typec_mux_set: DP PHY is still in use, deferring switch to %d\n",
+			new_mode);
+		qmp->pending_mode = new_mode;
+		qmp->mode_switch_pending = true;
 		return 0;
 	}
 
-	dev_dbg(qmp->dev, "typec_mux_set: switching from qmpphy mode %d to %d\n",
-		qmp->qmpphy_mode, new_mode);
-
-	qmp->qmpphy_mode = new_mode;
-
-	if (qmp->init_count) {
-		if (qmp->usb_init_count)
-			qmp_combo_usb_power_off(qmp->usb_phy);
-
-		if (qmp->dp_init_count)
-			writel(DP_PHY_PD_CTL_PSR_PWRDN, qmp->dp_dp_phy + QSERDES_DP_PHY_PD_CTL);
-
-		qmp_combo_com_exit(qmp, true);
-
-		/* Now everything's powered down, power up the right PHYs */
-		qmp_combo_com_init(qmp, true);
-
-		if (new_mode == QMPPHY_MODE_DP_ONLY) {
-			if (qmp->usb_init_count)
-				qmp->usb_init_count--;
-		}
-
-		if (new_mode == QMPPHY_MODE_USB3DP || new_mode == QMPPHY_MODE_USB3_ONLY) {
-			qmp_combo_usb_power_on(qmp->usb_phy);
-			if (!qmp->usb_init_count)
-				qmp->usb_init_count++;
-		}
-
-		if (new_mode == QMPPHY_MODE_DP_ONLY || new_mode == QMPPHY_MODE_USB3DP) {
-			if (qmp->dp_init_count)
-				cfg->dp_aux_init(qmp);
-		}
-	}
+	qmp_combo_apply_mode(qmp, new_mode);
 
 	return 0;
 }
