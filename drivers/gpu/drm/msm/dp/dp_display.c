@@ -15,6 +15,7 @@
 #include <drm/display/drm_dp_aux_bus.h>
 #include <drm/display/drm_hdmi_audio_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_probe_helper.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
@@ -352,7 +353,17 @@ static void msm_dp_display_send_hpd_event(struct msm_dp *msm_dp_display)
 	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
 
 	connector = dp->msm_dp_display.connector;
-	drm_helper_hpd_irq_event(connector->dev);
+
+	/*
+	 * Do not use drm_helper_hpd_irq_event() here: it re-probes the
+	 * connector and only emits a uevent if the detected status changed.
+	 * ->detect() is derived from link_ready, which has already been
+	 * updated by the caller, so a userspace probe racing this call latches
+	 * the new status first and the event is then suppressed -- leaving a
+	 * client that failed its modeset with -ENOTCONN with nothing to retry
+	 * on. Notify unconditionally instead.
+	 */
+	drm_kms_helper_connector_hotplug_event(connector);
 }
 
 static int msm_dp_display_send_hpd_notification(struct msm_dp_display_private *dp,
