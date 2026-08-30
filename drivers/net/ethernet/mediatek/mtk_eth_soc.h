@@ -312,6 +312,8 @@
 #define MTK_LRO_RING_AGG_CNT_H_OFFSET	0
 
 /* QDMA TX Queue Configuration Registers */
+#define MTK_QTX_CFG_HW_RESV	GENMASK(15, 8)
+#define MTK_QTX_CFG_SW_RESV	GENMASK(7, 0)
 #define MTK_QTX_OFFSET		0x10
 #define QDMA_RES_THRES		4
 
@@ -336,8 +338,16 @@
 #define MTK_QTX_SCH_MAX_RATE_MAN_V3	GENMASK(9, 3)
 #define MTK_QTX_SCH_MAX_RATE_EXP_V3	GENMASK(2, 0)
 
+/* QDMA TX Queue MIB Interface Register */
+#define MTK_MIB_ON_QTX_CFG	BIT(31)
+#define MTK_VQTX_MIB_EN		BIT(28)
+
 /* QDMA TX Scheduler Rate Control Register */
+#define MTK_QDMA_TX_SCH			GENMASK(15, 0)
 #define MTK_QDMA_TX_SCH_MAX_WFQ		BIT(15)
+#define MTK_QDMA_TX_SCH_RATE_EN		BIT(11)
+#define MTK_QDMA_TX_SCH_RATE_MAN	GENMASK(10, 4)
+#define MTK_QDMA_TX_SCH_RATE_EXP	GENMASK(3, 0)
 
 /* QDMA Global Configuration Register */
 #define MTK_RX_2B_OFFSET	BIT(31)
@@ -1434,14 +1444,18 @@ struct mtk_reg_map {
 		u32	rx_ptr;		/* rx base pointer */
 		u32	rx_cnt_cfg;	/* rx max count configuration */
 		u32	qcrx_ptr;	/* rx cpu pointer */
+		u32	page;		/* page configuration */
 		u32	glo_cfg;	/* global configuration */
 		u32	rst_idx;	/* reset index */
 		u32	delay_irq;	/* delay interrupt */
 		u32	fc_th;		/* flow control */
 		u32	int_grp;
+		u32	fsm;
 		u32	hred;		/* interrupt mask */
+		u32	qtx_mib_if;	/* tx queue mib interface */
 		u32	ctx_ptr;	/* tx acquire cpu pointer */
 		u32	dtx_ptr;	/* tx acquire dma pointer */
+		u32	fwd_count;	/* tx forward count */
 		u32	crx_ptr;	/* tx release cpu pointer */
 		u32	drx_ptr;	/* tx release dma pointer */
 		u32	fq_head;	/* fq head pointer */

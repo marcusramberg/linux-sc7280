@@ -34,6 +34,7 @@
 
 #include "mtk_eth_soc.h"
 #include "mtk_wed.h"
+#include "mtk_eth_dbg.h"
 
 static int mtk_msg_level = -1;
 module_param_named(msg_level, mtk_msg_level, int, 0);
@@ -53,6 +54,7 @@ static const struct mtk_reg_map mtk_reg_map = {
 		.rx_ptr		= 0x0900,
 		.rx_cnt_cfg	= 0x0904,
 		.pcrx_ptr	= 0x0908,
+		.pdrx_ptr	= 0x090c,
 		.lro_ctrl_dw0   = 0x0980,
 		.glo_cfg	= 0x0a04,
 		.rst_idx	= 0x0a08,
@@ -78,9 +80,11 @@ static const struct mtk_reg_map mtk_reg_map = {
 		.fc_th		= 0x1a10,
 		.tx_sch_rate	= 0x1a14,
 		.int_grp	= 0x1a20,
+		.fsm		= 0x1a34,
 		.hred		= 0x1a44,
 		.ctx_ptr	= 0x1b00,
 		.dtx_ptr	= 0x1b04,
+		.fwd_count	= 0x1b08,
 		.crx_ptr	= 0x1b10,
 		.drx_ptr	= 0x1b14,
 		.fq_head	= 0x1b20,
@@ -108,6 +112,7 @@ static const struct mtk_reg_map mt7628_reg_map = {
 		.rx_ptr		= 0x0900,
 		.rx_cnt_cfg	= 0x0904,
 		.pcrx_ptr	= 0x0908,
+		.pdrx_ptr	= 0x090c,
 		.glo_cfg	= 0x0a04,
 		.rst_idx	= 0x0a08,
 		.delay_irq	= 0x0a0c,
@@ -125,6 +130,7 @@ static const struct mtk_reg_map mt7986_reg_map = {
 		.rx_ptr		= 0x4100,
 		.rx_cnt_cfg	= 0x4104,
 		.pcrx_ptr	= 0x4108,
+		.pdrx_ptr	= 0x410c,
 		.glo_cfg	= 0x4204,
 		.rst_idx	= 0x4208,
 		.delay_irq	= 0x420c,
@@ -150,9 +156,12 @@ static const struct mtk_reg_map mt7986_reg_map = {
 		.delay_irq	= 0x460c,
 		.fc_th		= 0x4610,
 		.int_grp	= 0x4620,
+		.fsm		= 0x4634,
 		.hred		= 0x4644,
+		.qtx_mib_if	= 0x46bc,
 		.ctx_ptr	= 0x4700,
 		.dtx_ptr	= 0x4704,
+		.fwd_count	= 0x4708,
 		.crx_ptr	= 0x4710,
 		.drx_ptr	= 0x4714,
 		.fq_head	= 0x4720,
@@ -182,6 +191,7 @@ static const struct mtk_reg_map mt7988_reg_map = {
 		.rx_ptr		= 0x6900,
 		.rx_cnt_cfg	= 0x6904,
 		.pcrx_ptr	= 0x6908,
+		.pdrx_ptr	= 0x690c,
 		.glo_cfg	= 0x6a04,
 		.rst_idx	= 0x6a08,
 		.delay_irq	= 0x6a0c,
@@ -212,9 +222,12 @@ static const struct mtk_reg_map mt7988_reg_map = {
 		.delay_irq	= 0x460c,
 		.fc_th		= 0x4610,
 		.int_grp	= 0x4620,
+		.fsm		= 0x4634,
 		.hred		= 0x4644,
+		.qtx_mib_if	= 0x46bc,
 		.ctx_ptr	= 0x4700,
 		.dtx_ptr	= 0x4704,
+		.fwd_count	= 0x4708,
 		.crx_ptr	= 0x4710,
 		.drx_ptr	= 0x4714,
 		.fq_head	= 0x4720,
