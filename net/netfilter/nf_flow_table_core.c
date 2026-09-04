@@ -397,6 +397,34 @@ void flow_offload_teardown(struct flow_offload *flow)
 }
 EXPORT_SYMBOL_GPL(flow_offload_teardown);
 
+void flow_offload_teardown_by_tuple(struct flow_offload_tuple *tuple)
+{
+	struct flow_offload_tuple_rhash *tuplehash;
+	struct nf_flowtable *flowtable;
+	struct net_device *netdev;
+	struct flow_offload *flow;
+	int dir;
+
+	mutex_lock(&flowtable_lock);
+	list_for_each_entry(flowtable, &flowtables, list) {
+		rcu_read_lock();
+		for_each_netdev_rcu(&init_net, netdev) {
+			tuple->iifidx = netdev->ifindex;
+			tuplehash = flow_offload_lookup(flowtable, tuple);
+			if (!tuplehash)
+				continue;
+
+			dir = tuplehash->tuple.dir;
+			flow = container_of(tuplehash, struct flow_offload,
+					    tuplehash[dir]);
+			flow_offload_teardown(flow);
+		}
+		rcu_read_unlock();
+	}
+	mutex_unlock(&flowtable_lock);
+}
+EXPORT_SYMBOL_GPL(flow_offload_teardown_by_tuple);
+
 struct flow_offload_tuple_rhash *
 flow_offload_lookup(struct nf_flowtable *flow_table,
 		    struct flow_offload_tuple *tuple)
